@@ -47,7 +47,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onResetDefaults,
 }) => {
   const t = translations[settings.language].settings;
-  const [githubRepo, setGithubRepo] = useState('cybermastersofficial/ProxyTunnel');
+  const [githubRepo, setGithubRepo] = useState('sibasyanya/ProxyTunnel-VPN-Client');
   const [updateState, setUpdateState] = useState<UpdateState>({
     isChecking: false,
     hasChecked: false,

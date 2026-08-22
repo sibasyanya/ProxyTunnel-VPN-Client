@@ -234,7 +234,7 @@ fn close_window(window: Window, minimize_to_tray: bool) -> Result<(), String> {
 #[tauri::command]
 async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, String> {
   let current_version = "1.1.0".to_string();
-  let repo = repo_name.unwrap_or_else(|| "cybermastersofficial/ProxyTunnel".into());
+  let repo = repo_name.unwrap_or_else(|| "sibasyanya/ProxyTunnel-VPN-Client".into());
   let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
   #[cfg(target_os = "windows")]
