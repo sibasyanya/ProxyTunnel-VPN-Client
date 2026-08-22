@@ -1,0 +1,6 @@
+{
+  "name": "ProxyTunnel VPN Client",
+  "description": "A modern Windows 11 Proxy-to-VPN client with SOCKS5/HTTP tunneling, split-tunneling app bypass, latency diagnostics, and bilingual EN/RU support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
