@@ -221,6 +221,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Theme Selector (Dark / Light) */}
+          <div className="space-y-2 pt-2 border-t border-slate-800/80">
+            <div>
+              <div className="text-xs font-semibold text-slate-200">
+                {settings.language === 'ru' ? 'Тема оформления' : 'Interface Theme'}
+              </div>
+              <div className="text-[11px] text-slate-400">
+                {settings.language === 'ru' ? 'Выбор светлого или темного визуального режима' : 'Choose dark or light visual mode'}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                id="settings-theme-dark-btn"
+                onClick={() => onUpdateSettings({ theme: 'dark' })}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition ${
+                  settings.theme === 'dark' || !settings.theme
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>🌙 {settings.language === 'ru' ? 'Темная тема' : 'Dark Mode'}</span>
+              </button>
+
+              <button
+                type="button"
+                id="settings-theme-light-btn"
+                onClick={() => onUpdateSettings({ theme: 'light' })}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition ${
+                  settings.theme === 'light'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>☀️ {settings.language === 'ru' ? 'Светлая тема' : 'Light Mode'}</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Section 2: Windows Integration */}

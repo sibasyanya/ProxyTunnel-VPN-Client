@@ -364,12 +364,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
 
           <a
-            href="https://ip.ee"
+            href="https://2ip.io/ru/"
             target="_blank"
             rel="noreferrer"
             className="mt-3 inline-flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[11px] text-emerald-400 font-medium transition"
           >
-            <span>{t.dashboard.networkInfo.checkIpBrowser || 'Проверить IP на ip.ee'}</span>
+            <span>{language === 'ru' ? 'Проверить IP на 2ip.io' : 'Check IP at 2ip.io'}</span>
             <ExternalLink className="w-3 h-3" />
           </a>
         </div>

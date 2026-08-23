@@ -395,13 +395,15 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 font-sans select-none overflow-hidden">
+    <div className={`flex flex-col h-screen w-screen font-sans select-none overflow-hidden ${settings.theme === 'light' ? 'app-theme-light bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'}`}>
       {/* Draggable Top Header with Windows Controls */}
       <Header
         connectionState={connectionState}
         activeProxy={activeProxy}
         language={settings.language}
         onLanguageChange={(lang) => handleUpdateSettings({ language: lang })}
+        theme={settings.theme || 'dark'}
+        onThemeToggle={() => handleUpdateSettings({ theme: settings.theme === 'light' ? 'dark' : 'light' })}
         minimizeToTray={settings.minimizeToTray}
       />
 

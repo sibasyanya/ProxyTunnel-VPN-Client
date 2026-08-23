@@ -9,11 +9,16 @@
   },
   "package": {
     "productName": "ProxyTunnel",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "tauri": {
     "allowlist": {
       "all": true,
+      "dialog": {
+        "all": true,
+        "open": true,
+        "save": true
+      },
       "window": {
         "all": true,
         "close": true,

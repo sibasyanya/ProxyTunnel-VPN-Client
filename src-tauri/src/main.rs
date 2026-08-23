@@ -54,9 +54,10 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
     if enabled {
       let proto = protocol.to_lowercase();
       let proxy_server = if proto.contains("socks") {
-        format!("socks={}:{}", host, port)
+        // Multi-protocol string so Telegram, Windows Store apps and browsers all catch SOCKS5
+        format!("http={0}:{1};https={0}:{1};socks={0}:{1}", host, port)
       } else {
-        format!("{}:{}", host, port)
+        format!("http={0}:{1};https={0}:{1}", host, port)
       };
 
       // 1. Direct registry updates via reg.exe (Immediate & Fail-proof)
@@ -317,49 +318,135 @@ async fn get_real_public_ip() -> Result<RealIpInfo, String> {
   })
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RealProcessItem {
+  pub name: String,
+  pub executable: String,
+  pub path: String,
+  pub category: String,
+}
+
 #[tauri::command]
-fn get_running_windows_processes() -> Vec<String> {
+fn get_running_windows_processes() -> Vec<RealProcessItem> {
   #[cfg(target_os = "windows")]
   {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+    let ps_cmd = r#"
+      try {
+        $procs = Get-Process | Where-Object { 
+          $_.MainWindowTitle -or ($_.ProcessName -match '^(chrome|msedge|firefox|brave|opera|telegram|discord|steam|spotify|code|vlc|torrent|qbittorrent|thunderbird|skype|slack|epicgames|origin)$')
+        } | Select-Object -Property ProcessName, Path -Unique
+        
+        $result = @()
+        foreach ($p in $procs) {
+          $exe = "$($p.ProcessName).exe".ToLower()
+          $path = if ($p.Path) { $p.Path } else { "$($p.ProcessName).exe" }
+          $cat = "system"
+          if ($exe -match 'chrome|edge|firefox|brave|opera|browser') { $cat = "browser" }
+          elseif ($exe -match 'telegram|discord|skype|slack|signal|whatsapp') { $cat = "messenger" }
+          elseif ($exe -match 'steam|epic|origin|game|gta|riot') { $cat = "game" }
+          elseif ($exe -match 'code|idea|studio|git|terminal') { $cat = "development" }
+
+          $result += [PSCustomObject]@{
+            name = $p.ProcessName
+            executable = $exe
+            path = $path
+            category = $cat
+          }
+        }
+        $result | ConvertTo-Json -Compress
+      } catch {
+        Write-Output "[]"
+      }
+    "#;
+
     if let Ok(output) = Command::new("powershell")
-      .args(&[
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object -ExpandProperty ProcessName",
-      ])
+      .args(&["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
       .creation_flags(CREATE_NO_WINDOW)
       .output()
     {
       let stdout = String::from_utf8_lossy(&output.stdout);
-      let mut list: Vec<String> = stdout
-        .lines()
-        .map(|l| l.trim().to_lowercase())
-        .filter(|l| !l.is_empty())
-        .map(|l| if l.ends_with(".exe") { l } else { format!("{}.exe", l) })
-        .collect();
-      list.sort();
-      list.dedup();
-      if !list.is_empty() {
-        return list;
+      let trimmed = stdout.trim();
+      if !trimmed.is_empty() && (trimmed.starts_with('[') || trimmed.starts_with('{')) {
+        if let Ok(items) = serde_json::from_str::<Vec<RealProcessItem>>(trimmed) {
+          if !items.is_empty() {
+            return items;
+          }
+        } else if let Ok(single) = serde_json::from_str::<RealProcessItem>(trimmed) {
+          return vec![single];
+        }
       }
     }
   }
 
   vec![
-    "msedge.exe".into(),
-    "chrome.exe".into(),
-    "firefox.exe".into(),
-    "telegram.exe".into(),
-    "discord.exe".into(),
-    "steam.exe".into(),
-    "spotify.exe".into(),
-    "code.exe".into(),
-    "torrent.exe".into(),
+    RealProcessItem {
+      name: "Google Chrome".into(),
+      executable: "chrome.exe".into(),
+      path: r"C:\Program Files\Google\Chrome\Application\chrome.exe".into(),
+      category: "browser".into(),
+    },
+    RealProcessItem {
+      name: "Microsoft Edge".into(),
+      executable: "msedge.exe".into(),
+      path: r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe".into(),
+      category: "browser".into(),
+    },
+    RealProcessItem {
+      name: "Telegram Desktop".into(),
+      executable: "telegram.exe".into(),
+      path: r"C:\Users\User\AppData\Roaming\Telegram Desktop\Telegram.exe".into(),
+      category: "messenger".into(),
+    },
+    RealProcessItem {
+      name: "Discord".into(),
+      executable: "discord.exe".into(),
+      path: r"C:\Users\User\AppData\Local\Discord\app-1.0.9015\Discord.exe".into(),
+      category: "messenger".into(),
+    },
+    RealProcessItem {
+      name: "Steam".into(),
+      executable: "steam.exe".into(),
+      path: r"C:\Program Files (x86)\Steam\steam.exe".into(),
+      category: "game".into(),
+    },
   ]
+}
+
+#[tauri::command]
+async fn open_exe_file_dialog() -> Result<Option<String>, String> {
+  #[cfg(target_os = "windows")]
+  {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let ps_cmd = r#"
+      Add-Type -AssemblyName System.Windows.Forms
+      $dialog = New-Object System.Windows.Forms.OpenFileDialog
+      $dialog.Filter = "Executable Files (*.exe)|*.exe|All Files (*.*)|*.*"
+      $dialog.Title = "ProxyTunnel - Выберите приложение (.exe)"
+      $dialog.InitialDirectory = [Environment]::GetFolderPath("ProgramFiles")
+      if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        Write-Output $dialog.FileName
+      }
+    "#;
+
+    if let Ok(output) = Command::new("powershell")
+      .args(&["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
+      .creation_flags(CREATE_NO_WINDOW)
+      .output()
+    {
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      let path = stdout.trim().to_string();
+      if !path.is_empty() {
+        return Ok(Some(path));
+      }
+    }
+  }
+
+  Ok(None)
 }
 
 // Window Management Commands
@@ -564,6 +651,7 @@ fn main() {
       check_wintun_driver,
       get_real_public_ip,
       get_running_windows_processes,
+      open_exe_file_dialog,
       minimize_window,
       toggle_maximize_window,
       close_window,

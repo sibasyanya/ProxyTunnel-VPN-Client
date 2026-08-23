@@ -8,12 +8,14 @@ import {
   Laptop,
   CheckCircle2,
   AlertTriangle,
-  XCircle,
-  ExternalLink,
-  ChevronRight,
-  ShieldAlert,
   Zap,
-  Cpu,
+  Sliders,
+  Compass,
+  Monitor,
+  Wifi,
+  Globe,
+  Settings,
+  Lock,
 } from 'lucide-react';
 import { AppLanguage, ProxyProfile } from '../types';
 import { translations } from '../translations';
@@ -25,7 +27,7 @@ interface HelpViewProps {
 
 export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => {
   const t = translations[language].help;
-  const [activeTab, setActiveTab] = useState<'quickstart' | 'protocols' | 'splitGuide' | 'troubleshooting' | 'diagnostics'>('quickstart');
+  const [activeTab, setActiveTab] = useState<'reference' | 'quickstart' | 'protocols' | 'splitGuide' | 'diagnostics'>('reference');
 
   // Diagnostics State
   const [isDiagRunning, setIsDiagRunning] = useState(false);
@@ -79,17 +81,19 @@ export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => 
           <HelpCircle className="w-5 h-5 text-emerald-400" />
           {t.title}
         </h2>
-        <p className="text-xs text-slate-400 mt-1 max-w-xl">
-          {t.subtitle}
+        <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+          {language === 'ru'
+            ? 'Полное интерактивное руководство по всем функциям, виджетам, индикаторам, меню и системным настройкам ProxyTunnel VPN Client.'
+            : 'Comprehensive guide covering every UI widget, metric indicator, menu option, and proxy setting in ProxyTunnel.'}
         </p>
 
         {/* Tab navigation pills */}
         <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-slate-800">
           {[
+            { id: 'reference', label: language === 'ru' ? 'Справочник элементов и виджетов' : 'UI & Widgets Reference', icon: Compass },
             { id: 'quickstart', label: t.tabs.quickstart, icon: BookOpen },
             { id: 'protocols', label: t.tabs.protocols, icon: Server },
             { id: 'splitGuide', label: t.tabs.splitGuide, icon: Laptop },
-            { id: 'troubleshooting', label: t.tabs.troubleshooting, icon: ShieldAlert },
             { id: 'diagnostics', label: t.tabs.diagnostics, icon: Activity },
           ].map((tab) => {
             const Icon = tab.icon;
@@ -114,9 +118,214 @@ export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => 
         </div>
       </div>
 
+      {/* Tab 0: Comprehensive UI & Widgets Reference */}
+      {activeTab === 'reference' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Section 1: Top Bar & Window Header */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 border-b border-slate-800 pb-2.5">
+              <Monitor className="w-4 h-4 text-emerald-400" />
+              <span>{language === 'ru' ? '1. Верхняя панель (Header) и управление окном' : '1. Top Header & Window Controls'}</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-emerald-400">
+                  {language === 'ru' ? 'Индикатор статуса (по центру):' : 'Status Pill (Center):'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Отображает текущее состояние туннеля в реальном времени: «Подключено» (зеленая пульсация с флагом страны сервера), «Подключение...» (желтый спиннер) или «Отключено» (серый). Область панели также служит для перетаскивания окна по экрану.'
+                    : 'Displays live tunnel status: Connected (green pulsing beacon with country flag), Connecting (yellow spinner), or Disconnected. Drag the window by this header area.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-amber-400">
+                  {language === 'ru' ? 'Переключатель тем (☀️/🌙) и языка (RU/EN):' : 'Theme & Language Switchers:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Кнопка с иконкой солнца/луны мгновенно переключает между темной и светлой темами оформления. Кнопки RU/EN моментально меняют язык интерфейса.'
+                    : 'Sun/Moon toggle switches between Dark and Light mode. RU/EN buttons switch the UI language instantly without restarting.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-sky-400">
+                  {language === 'ru' ? 'Системные кнопки Windows 11 (—, □, ✕):' : 'Native Window Buttons:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Кнопки интегрированы с ядром Windows: сворачивание, разворачивание во весь экран и безопасное сворачивание в системный трей возле часов при нажатии на крестик.'
+                    : 'Minimize, maximize/restore, and close buttons integrated with Tauri/Windows. Closing minimizes the client to the system tray by default.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-indigo-400">
+                  {language === 'ru' ? 'Значок трея (в области уведомлений):' : 'System Tray Icon:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Двойной клик по иконке в трее открывает окно. Правый клик открывает контекстное меню для быстрого отключения туннеля или полного выхода из приложения.'
+                    : 'Double-clicking tray icon restores the window. Right-clicking opens menu to disconnect tunnel or exit the app safely.'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Dashboard Widgets */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 border-b border-slate-800 pb-2.5">
+              <Zap className="w-4 h-4 text-amber-400" />
+              <span>{language === 'ru' ? '2. Главная вкладка (Dashboard) — Виджеты и мониторы' : '2. Dashboard Widgets & Telemetry'}</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-emerald-400">
+                  {language === 'ru' ? 'Большая кнопка «ПОДКЛЮЧИТЬ ТУННЕЛЬ»:' : 'Big Connect Button:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Главная кнопка управления. При нажатии обращается к системным интерфейсам Windows (WinINet, Registry, WinHTTP), настраивая единую маршрутизацию для всех приложений через активный прокси.'
+                    : 'Main power switch. Activates system proxy routing across all browsers, background services, and desktop apps.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-sky-400">
+                  {language === 'ru' ? 'Виджет «Исходящий IP»:' : 'Public IP Widget:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Показывает внешний IP-адрес, под которым вас видят сайты в интернете, а также страну и город сервера. Снизу расположена прямая кнопка проверки IP на сервисе 2ip.io.'
+                    : 'Displays active public IPv4 address and geolocation. Includes a direct one-click link to verify IP on 2ip.io.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-indigo-400">
+                  {language === 'ru' ? 'Входящая / Исходящая скорость:' : 'Download / Upload Speed:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Отображает текущую скорость передачи данных в реальном времени (KB/s, MB/s), а также суммарный объем принятого и переданного трафика за текущую сессию.'
+                    : 'Shows real-time throughput metrics and total session bandwidth consumption (bytes in/out).'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-amber-400">
+                  {language === 'ru' ? 'Задержка (Ping / Latency):' : 'Ping / Latency Metric:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Время отклика до прокси-сервера в миллисекундах (мс). Чем ниже значение, тем быстрее открываются веб-страницы и стабильнее голосовая связь.'
+                    : 'Round-trip response time to proxy server in milliseconds. Lower ping provides snappier web browsing and lower VoIP delay.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-purple-400">
+                  {language === 'ru' ? 'Время сессии (Uptime):' : 'Session Duration:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Таймер непрерывной активности текущего подключения в формате ММ:СС или ЧЧ:ММ:СС.'
+                    : 'Continuous connection timer measuring the current active tunnel uptime.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-emerald-400">
+                  {language === 'ru' ? 'DNS & Защита от утечек:' : 'DNS Leak Shield:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Показывает активный защищенный DNS-резолвер (например, Cloudflare 1.1.1.1 DoH), который предотвращает перехват провайдером посещаемых сайтов.'
+                    : 'Indicates the active encrypted DNS resolver protecting your queries against ISP snooping.'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Split Tunneling & Proxies */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 border-b border-slate-800 pb-2.5">
+              <Sliders className="w-4 h-4 text-sky-400" />
+              <span>{language === 'ru' ? '3. Вкладки «Прокси-серверы» и «Исключения приложений»' : '3. Proxy Server Manager & App Bypass'}</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-emerald-400">
+                  {language === 'ru' ? 'Менеджер серверов:' : 'Server Manager:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Позволяет сохранять неограниченное число SOCKS5 и HTTP/HTTPS прокси. Поддерживает тест задержки (Ping) в один клик, автоматическую авторизацию (логин и пароль) и быстрое переключение.'
+                    : 'Store multiple SOCKS5 / HTTP profiles. Perform one-click latency tests and easily switch between servers.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-indigo-400">
+                  {language === 'ru' ? 'Исключения приложений (Split Tunneling):' : 'Split Tunneling Modes:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Режим «Черный список» направляет весь интернет через прокси, кроме выбранных программ (например, игры идут напрямую). Режим «Белый список» направляет через прокси только указанные программы.'
+                    : 'Blacklist mode routes all traffic through proxy except chosen apps. Whitelist mode tunnels only selected programs.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-amber-400">
+                  {language === 'ru' ? 'Кнопка «Обновить список процессов»:' : 'Refresh Processes Button:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Сканирует запущенные в Windows процессы и отображает актуальный список открытых программ с их путями для добавления в исключения в один клик.'
+                    : 'Scans running Windows processes and provides one-click adding of active apps.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-sky-400">
+                  {language === 'ru' ? 'Кнопка «Обзор...» (.EXE):' : 'Native File Dialog (.EXE):'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Открывает системный проводник Windows для выбора любого исполняемого файла программы на жестком диске (в Program Files, AppData и т.д.).'
+                    : 'Opens native Windows File Explorer to browse and select any .exe file on your disk.'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 4: Settings & Security */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 border-b border-slate-800 pb-2.5">
+              <Settings className="w-4 h-4 text-purple-400" />
+              <span>{language === 'ru' ? '4. Настройки приложения и безопасность' : '4. Application Settings & Security'}</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-red-400">
+                  {language === 'ru' ? 'Kill Switch (Аварийный выключатель):' : 'Kill Switch:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'При непредвиденном обрыве связи с прокси немедленно блокирует весь исходящий интернет-трафик, исключая случайную утечку вашего реального IP.'
+                    : 'Instantly blocks outgoing traffic if proxy connection drops, preventing real IP exposure.'}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
+                <span className="font-semibold text-emerald-400">
+                  {language === 'ru' ? 'Автозапуск и Сворачивание в трей:' : 'Startup & Tray Integration:'}
+                </span>
+                <p className="text-slate-300 mt-1">
+                  {language === 'ru'
+                    ? 'Возможность запускать приложение вместе со стартом Windows 11 и удерживать его в фоне около часов, экономя оперативную память.'
+                    : 'Enables automatic launch on Windows boot and keeps the app running in background.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tab 1: Quickstart */}
       {activeTab === 'quickstart' && (
-        <div className="space-y-4">
+        <div className="space-y-4 animate-fade-in">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 relative overflow-hidden">
               <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-400 font-bold text-xs flex items-center justify-center mb-3">
@@ -155,8 +364,8 @@ export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => 
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
                 {language === 'ru'
-                  ? 'Откройте сайты ip.ee, 2ip.ru или whoer.net — ваш адрес сменится на IP прокси-сервера.'
-                  : 'Visit ip.ee, 2ip.ru, or whoer.net in Edge, Chrome, or Firefox — your public IP will show the proxy location.'}
+                  ? 'Откройте сайты 2ip.io или whoer.net — ваш адрес сменится на IP прокси-сервера.'
+                  : 'Visit 2ip.io or whoer.net in Edge, Chrome, or Firefox — your public IP will show the proxy location.'}
               </p>
             </div>
           </div>
@@ -177,7 +386,7 @@ export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => 
 
       {/* Tab 2: Protocols */}
       {activeTab === 'protocols' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2 font-semibold text-slate-100 text-sm">
@@ -200,7 +409,7 @@ export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => 
               </li>
               <li className="flex items-center gap-2">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{language === 'ru' ? 'Удаленный DNS-резолвинг без утечек' : 'Remote DNS Resolution'}</span>
+                <span>{language === 'ru' ? 'Полная совместимость с Telegram и браузерами' : 'Full Telegram & Browser Compatibility'}</span>
               </li>
             </ul>
           </div>
@@ -208,103 +417,47 @@ export const HelpView: React.FC<HelpViewProps> = ({ language, activeProxy }) => 
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2 font-semibold text-slate-100 text-sm">
-                <Server className="w-4 h-4 text-sky-400" />
-                <span>HTTP / HTTPS (CONNECT)</span>
+                <Globe className="w-4 h-4 text-sky-400" />
+                <span>HTTP / HTTPS Proxy</span>
               </div>
-              <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-400 font-mono">
-                Web Proxy
-              </span>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
               {language === 'ru'
-                ? 'HTTP(S) прокси оптимизирован для веб-сайтов через команду HTTP CONNECT. Шифрует весь HTTPS-трафик между вашим ПК и сервером назначения.'
-                : 'HTTP/HTTPS proxy uses HTTP CONNECT tunneling to create TLS streams between your computer and web destinations.'}
+                ? 'HTTP/HTTPS прокси работают на прикладном уровне (Layer 7). Оптимизированы для веб-серфинга, потокового видео и API-запросов.'
+                : 'HTTP/HTTPS proxies operate at Layer 7, optimized for web browsing, video streaming, and REST API traffic.'}
             </p>
-            <ul className="text-xs text-slate-400 space-y-1.5 pt-1">
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />
-                <span>{language === 'ru' ? 'Совместимость с любыми веб-серверами' : 'Broad compatibility with web nodes'}</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />
-                <span>{language === 'ru' ? 'Высокая скорость загрузки страниц' : 'Fast web page caching and transfer'}</span>
-              </li>
-            </ul>
           </div>
         </div>
       )}
 
       {/* Tab 3: Split Tunneling Guide */}
       {activeTab === 'splitGuide' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100 border-b border-slate-800 pb-3">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 animate-fade-in">
+          <div className="flex items-center gap-2 font-semibold text-slate-100 text-sm border-b border-slate-800 pb-3">
             <Laptop className="w-4 h-4 text-indigo-400" />
-            <span>{language === 'ru' ? 'Как работает раздельное туннелирование (Split Tunneling)' : 'How Split Tunneling Operates'}</span>
+            <span>{language === 'ru' ? 'Настройка Split Tunneling для программ и браузеров' : 'Configuring Split Tunneling'}</span>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
-              <h4 className="text-xs font-semibold text-slate-200">
-                {language === 'ru' ? '1. Черный список (Исключения)' : '1. Blacklist (Bypass Mode)'}
-              </h4>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                {language === 'ru'
-                  ? 'Весь интернет-трафик системы направляется через прокси, КРОМЕ добавленных программ (например, игры с низким пингом или локальные сервисы).'
-                  : 'All Windows traffic routes through the proxy EXCEPT apps in the list (e.g. low-ping multiplayer games or bank apps).'}
-              </p>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            {language === 'ru'
+              ? 'Функция Split Tunneling позволяет одновременно использовать прокси для одних приложений и прямой домашний интернет для других.'
+              : 'Split Tunneling allows routing sensitive or foreign traffic through the proxy while keeping games or local apps on direct connection.'}
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
+              <div className="font-semibold text-emerald-400 mb-1">{language === 'ru' ? 'Пример: Google Chrome напрямую' : 'Example: Chrome Direct'}</div>
+              <p className="text-slate-400">{language === 'ru' ? 'Добавьте chrome.exe в Черный список — браузер будет открывать сайты через вашего обычного провайдера на максимальной скорости.' : 'Add chrome.exe to bypass list to browse with native ISP IP.'}</p>
             </div>
-
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
-              <h4 className="text-xs font-semibold text-slate-200">
-                {language === 'ru' ? '2. Белый список (Только выбранные)' : '2. Whitelist (Target Mode)'}
-              </h4>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                {language === 'ru'
-                  ? 'ТОЛЬКО указанные программы (например, Chrome или Telegram) используют прокси. Все остальные системные процессы работают напрямую.'
-                  : 'ONLY designated software processes route through the proxy while everything else connects directly.'}
-              </p>
+            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
+              <div className="font-semibold text-indigo-400 mb-1">{language === 'ru' ? 'Пример: Игры Steam / Discord' : 'Example: Steam / Discord'}</div>
+              <p className="text-slate-400">{language === 'ru' ? 'Добавьте steam.exe в исключения для предотвращения задержек в сетевых играх.' : 'Bypass steam.exe to ensure zero additional gaming ping.'}</p>
             </div>
           </div>
         </div>
       )}
 
-      {/* Tab 4: Troubleshooting */}
-      {activeTab === 'troubleshooting' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100 border-b border-slate-800 pb-3">
-            <ShieldAlert className="w-4 h-4 text-amber-400" />
-            <span>{language === 'ru' ? 'Устранение неполадок и советы' : 'Troubleshooting & FAQ'}</span>
-          </div>
-
-          <div className="space-y-3">
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-              <h4 className="text-xs font-semibold text-slate-200 mb-1">
-                {language === 'ru' ? '❓ Сайт ip.ee или 2ip не меняет IP-адрес' : '❓ IP does not change on ip.ee or 2ip'}
-              </h4>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                {language === 'ru'
-                  ? '1. Убедитесь, что кнопка на главной вкладке горит зеленым («Подключено»). 2. Обновите вкладку в браузере (Ctrl + F5), чтобы сбросить кэш сокетов.'
-                  : '1. Ensure the Dashboard button shows "Connected". 2. Hard refresh your browser tab (Ctrl + F5) to bypass cached sockets.'}
-              </p>
-            </div>
-
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-              <h4 className="text-xs font-semibold text-slate-200 mb-1">
-                {language === 'ru' ? '❓ Ошибка авторизации на SOCKS5 прокси' : '❓ SOCKS5 Authentication Error'}
-              </h4>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                {language === 'ru'
-                  ? 'Проверьте логин и пароль в окне редактирования прокси. Если прокси привязан к вашему IP-адресу у провайдера, логин и пароль можно оставить пустыми.'
-                  : 'Verify your username and password. If your proxy provider uses IP binding, you can leave the credentials empty.'}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 5: Diagnostics */}
+      {/* Tab 4: Diagnostics */}
       {activeTab === 'diagnostics' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5 animate-fade-in">
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
             <div>
               <h3 className="text-sm font-semibold text-slate-100">{t.diag.title}</h3>

@@ -10,7 +10,7 @@
   }
 }
 
-/* Custom Windows 11 Dark Scrollbar */
+/* Custom Windows 11 Dark / Light Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -29,3 +29,62 @@
   background: #334155;
 }
 
+/* Light Theme Overrides */
+.app-theme-light {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+.app-theme-light ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.app-theme-light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.app-theme-light header {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+}
+
+.app-theme-light aside {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+}
+
+.app-theme-light main {
+  background-color: #f1f5f9 !important;
+}
+
+.app-theme-light .bg-slate-900,
+.app-theme-light .bg-slate-900\/80,
+.app-theme-light .bg-slate-900\/90 {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+}
+
+.app-theme-light .bg-slate-950,
+.app-theme-light .bg-slate-950\/70,
+.app-theme-light .bg-slate-950\/80,
+.app-theme-light .bg-slate-950\/40 {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+}
+
+.app-theme-light .text-slate-100,
+.app-theme-light .text-slate-200,
+.app-theme-light .text-slate-300 {
+  color: #0f172a !important;
+}
+
+.app-theme-light .text-slate-400,
+.app-theme-light .text-slate-500 {
+  color: #475569 !important;
+}
+
+.app-theme-light .border-slate-800,
+.app-theme-light .border-slate-800\/80,
+.app-theme-light .border-slate-700 {
+  border-color: #e2e8f0 !important;
+}

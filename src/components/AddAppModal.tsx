@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Search,
@@ -6,20 +6,17 @@ import {
   RefreshCw,
   FolderOpen,
   Laptop,
-  CheckCircle,
   AlertCircle,
   Globe,
   MessageSquare,
   Gamepad2,
   Code,
-  Music,
-  Video,
-  Shield,
   Cpu,
 } from 'lucide-react';
 import { BypassApp, AppLanguage } from '../types';
 import { sampleRunningProcesses } from '../data/initialData';
 import { translations } from '../translations';
+import { openFileDialog, fetchRunningProcesses } from '../utils/tauriBridge';
 
 interface AddAppModalProps {
   isOpen: boolean;
@@ -43,6 +40,43 @@ export const AddAppModal: React.FC<AddAppModalProps> = ({
   const [customPath, setCustomPath] = useState('');
   const [customName, setCustomName] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [processesList, setProcessesList] = useState<Array<{
+    name: string;
+    executable: string;
+    path: string;
+    category: BypassApp['category'];
+    iconName?: string;
+  }>>(sampleRunningProcesses);
+
+  // Load real Windows processes when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      handleRefreshProcesses();
+    }
+  }, [isOpen]);
+
+  const handleRefreshProcesses = async () => {
+    setIsRefreshing(true);
+    try {
+      const realList = await fetchRunningProcesses();
+      if (realList && realList.length > 0) {
+        setProcessesList(
+          realList.map((p) => ({
+            name: p.name,
+            executable: p.executable,
+            path: p.path,
+            category: (p.category as BypassApp['category']) || 'system',
+            iconName: 'laptop',
+          }))
+        );
+      }
+    } catch (e) {
+      console.log('Error refreshing processes:', e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -69,13 +103,13 @@ export const AddAppModal: React.FC<AddAppModalProps> = ({
     }
   };
 
-  const filteredProcesses = sampleRunningProcesses.filter(
+  const filteredProcesses = processesList.filter(
     (p) =>
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.executable.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleAddProcess = (proc: typeof sampleRunningProcesses[0]) => {
+  const handleAddProcess = (proc: typeof processesList[0]) => {
     if (isAlreadyAdded(proc.executable)) {
       setErrorMessage(t.alreadyAdded);
       return;
@@ -85,7 +119,7 @@ export const AddAppModal: React.FC<AddAppModalProps> = ({
       name: proc.name,
       executable: proc.executable,
       path: proc.path,
-      iconName: proc.iconName,
+      iconName: proc.iconName || 'laptop',
       enabled: true,
       category: proc.category,
       description: 'Auto-added from active processes',
@@ -126,9 +160,20 @@ export const AddAppModal: React.FC<AddAppModalProps> = ({
     onClose();
   };
 
-  const handleBrowseSimulated = () => {
-    setCustomPath('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
-    setCustomName('Google Chrome');
+  const handleBrowseNative = async () => {
+    try {
+      const selectedPath = await openFileDialog();
+      if (selectedPath) {
+        setCustomPath(selectedPath);
+        const fileName = selectedPath.split('\\').pop() || selectedPath;
+        const appName = fileName.replace(/\.exe$/i, '');
+        if (!customName) {
+          setCustomName(appName.charAt(0).toUpperCase() + appName.slice(1));
+        }
+      }
+    } catch (e) {
+      console.log('Error opening file dialog:', e);
+    }
   };
 
   return (
@@ -202,21 +247,35 @@ export const AddAppModal: React.FC<AddAppModalProps> = ({
         <div className="p-6 overflow-y-auto flex-1 text-xs">
           {activeTab === 'running' ? (
             <div className="space-y-4">
-              {/* Search Bar */}
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  id="search-running-processes-input"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={t.runningSearchPlaceholder}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 outline-hidden text-slate-100 text-xs placeholder-slate-500"
-                />
+              {/* Search Bar + Refresh Button */}
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    id="search-running-processes-input"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={t.runningSearchPlaceholder}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 outline-hidden text-slate-100 text-xs placeholder-slate-500"
+                  />
+                </div>
+                <button
+                  type="button"
+                  id="refresh-processes-btn"
+                  onClick={handleRefreshProcesses}
+                  disabled={isRefreshing}
+                  title={t.refreshProcesses || 'Обновить список процессов'}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">{language === 'ru' ? 'Обновить' : 'Refresh'}</span>
+                </button>
               </div>
 
-              <div className="text-[11px] text-slate-400 font-medium">
-                {t.selectPrompt}
+              <div className="text-[11px] text-slate-400 font-medium flex items-center justify-between">
+                <span>{t.selectPrompt}</span>
+                <span className="text-[10px] text-slate-500">{filteredProcesses.length} {language === 'ru' ? 'процессов' : 'processes'}</span>
               </div>
 
               {/* Running Processes List */}
@@ -282,10 +341,12 @@ export const AddAppModal: React.FC<AddAppModalProps> = ({
                   />
                   <button
                     type="button"
-                    onClick={handleBrowseSimulated}
-                    className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition"
+                    id="browse-native-exe-btn"
+                    onClick={handleBrowseNative}
+                    className="px-3.5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition"
                   >
-                    {t.browseBtn}
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>{t.browseBtn}</span>
                   </button>
                 </div>
               </div>

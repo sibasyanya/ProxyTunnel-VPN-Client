@@ -1,6 +1,6 @@
 import React from 'react';
-import { Shield, Minus, Square, X } from 'lucide-react';
-import { ConnectionState, AppLanguage, ProxyProfile } from '../types';
+import { Shield, Minus, Square, X, Sun, Moon } from 'lucide-react';
+import { ConnectionState, AppLanguage, AppTheme, ProxyProfile } from '../types';
 import { translations } from '../translations';
 import { getCountryFlag } from '../utils/formatters';
 import { minimizeWindow, toggleMaximizeWindow, closeWindow } from '../utils/tauriBridge';
@@ -10,6 +10,8 @@ interface HeaderProps {
   activeProxy: ProxyProfile | null;
   language: AppLanguage;
   onLanguageChange: (lang: AppLanguage) => void;
+  theme: AppTheme;
+  onThemeToggle: () => void;
   minimizeToTray?: boolean;
 }
 
@@ -18,6 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   activeProxy,
   language,
   onLanguageChange,
+  theme,
+  onThemeToggle,
   minimizeToTray = true,
 }) => {
   const t = translations[language];
@@ -98,6 +102,20 @@ export const Header: React.FC<HeaderProps> = ({
         className="flex items-center gap-3 relative z-50 flex-shrink-0"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
+        {/* Theme Toggle Button */}
+        <button
+          type="button"
+          id="theme-toggle-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onThemeToggle();
+          }}
+          title={theme === 'dark' ? (language === 'ru' ? 'Включить светлую тему' : 'Switch to Light Mode') : (language === 'ru' ? 'Включить темную тему' : 'Switch to Dark Mode')}
+          className="p-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-amber-400 transition cursor-pointer flex items-center justify-center"
+        >
+          {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-sky-400" />}
+        </button>
+
         {/* Language selector toggle */}
         <div className="flex items-center bg-slate-800/90 rounded-md p-0.5 border border-slate-700">
           <button

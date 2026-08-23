@@ -91,3 +91,51 @@ export async function closeWindow(minimizeToTray: boolean = true): Promise<void>
   }
   await tauriInvoke('close_window', { minimizeToTray });
 }
+
+export async function openFileDialog(): Promise<string | null> {
+  console.log('[Bridge] openFileDialog triggered');
+  try {
+    const win = (typeof window !== 'undefined' ? window : null) as any;
+    if (win?.__TAURI__?.dialog?.open) {
+      const selected = await win.__TAURI__.dialog.open({
+        filters: [{ name: 'Executable (.exe)', extensions: ['exe'] }, { name: 'All Files', extensions: ['*'] }],
+        multiple: false,
+      });
+      if (typeof selected === 'string') return selected;
+      if (Array.isArray(selected) && selected.length > 0) return selected[0];
+    }
+  } catch (e) {
+    console.log('Tauri dialog.open fallback to invoke:', e);
+  }
+  
+  try {
+    const res = await tauriInvoke<string | null>('open_exe_file_dialog');
+    if (res) return res;
+  } catch (e) {
+    console.log('open_exe_file_dialog invoke error:', e);
+  }
+  return null;
+}
+
+export async function fetchRunningProcesses(): Promise<Array<{ name: string; executable: string; path: string; category: string }>> {
+  try {
+    const res = await tauriInvoke<any>('get_running_windows_processes');
+    if (Array.isArray(res) && res.length > 0) {
+      return res.map((item: any) => {
+        if (typeof item === 'string') {
+          const name = item.replace(/\.exe$/i, '');
+          return {
+            name: name.charAt(0).toUpperCase() + name.slice(1),
+            executable: item,
+            path: item,
+            category: 'system',
+          };
+        }
+        return item;
+      });
+    }
+  } catch (e) {
+    console.log('fetchRunningProcesses fallback:', e);
+  }
+  return [];
+}
