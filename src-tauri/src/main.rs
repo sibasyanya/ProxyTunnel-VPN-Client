@@ -34,88 +34,115 @@ pub struct UpdateInfo {
   pub release_name: Option<String>,
 }
 
-// Applies Windows Internet Settings (WinINet / System Proxy) so all browsers route through the proxy
-fn apply_windows_proxy(enabled: bool, proxy_server: &str) -> Result<(), String> {
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct RealIpInfo {
+  pub ip: String,
+  pub country: Option<String>,
+  pub country_code: Option<String>,
+  pub city: Option<String>,
+  pub isp: Option<String>,
+}
+
+// Applies Windows Internet Settings (WinINet / System Proxy + Registry + Connections Blob)
+// This guarantees that all browsers (Chrome, Edge, Firefox, Brave) and system apps route through the proxy immediately.
+fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> Result<(), String> {
   #[cfg(target_os = "windows")]
   {
     if enabled {
-      // 1. Enable proxy
-      let _ = Command::new("reg")
-        .args(&[
-          "add",
-          "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-          "/v",
-          "ProxyEnable",
-          "/t",
-          "REG_DWORD",
-          "/d",
-          "1",
-          "/f",
-        ])
-        .output();
+      let proto = protocol.to_lowercase();
+      let proxy_server = if proto.contains("socks") {
+        format!("socks={}:{}", host, port)
+      } else {
+        format!("http={0}:{1};https={0}:{1}", host, port)
+      };
 
-      // 2. Set proxy address (e.g., socks=1.2.3.4:1080 or 1.2.3.4:8080)
-      let _ = Command::new("reg")
-        .args(&[
-          "add",
-          "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-          "/v",
-          "ProxyServer",
-          "/t",
-          "REG_SZ",
-          "/d",
-          proxy_server,
-          "/f",
-        ])
-        .output();
+      // PowerShell script to comprehensively update Registry, DefaultConnectionSettings blob, and notify WinINet
+      let ps_script = format!(
+        r#"
+        $proxyServer = "{}"
+        $override = "<local>;localhost;127.0.0.1"
 
-      // 3. Set ProxyOverride
-      let _ = Command::new("reg")
-        .args(&[
-          "add",
-          "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-          "/v",
-          "ProxyOverride",
-          "/t",
-          "REG_SZ",
-          "/d",
-          "<local>;localhost;127.0.0.1",
-          "/f",
-        ])
+        # 1. Update standard Internet Settings
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1 -Type DWord
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $proxyServer -Type String
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value $override -Type String
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name AutoDetect -Value 0 -Type DWord
+
+        # 2. Update DefaultConnectionSettings binary blob (Crucial for Edge & Chrome in Windows 10/11)
+        $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
+        if (Test-Path $connKey) {{
+            $defaultConn = (Get-ItemProperty -Path $connKey -Name DefaultConnectionSettings -ErrorAction SilentlyContinue).DefaultConnectionSettings
+            if ($defaultConn) {{
+                # Byte index 8 is the proxy flag: 0x01 = disabled, 0x03 = enabled with proxy
+                $defaultConn[8] = 3
+                Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $defaultConn
+            }}
+            $savedConn = (Get-ItemProperty -Path $connKey -Name SavedConnectionSettings -ErrorAction SilentlyContinue).SavedConnectionSettings
+            if ($savedConn) {{
+                $savedConn[8] = 3
+                Set-ItemProperty -Path $connKey -Name SavedConnectionSettings -Value $savedConn
+            }}
+        }}
+
+        # 3. Notify WinINet of settings change
+        $sig = @'
+        [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
+        public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+'@
+        $w = Add-Type -MemberDefinition $sig -Name WinINetNotify -Namespace Win32 -PassThru -ErrorAction SilentlyContinue
+        if ($w) {{
+            [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+            [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+        }}
+
+        # 4. Flush DNS
+        Start-Process -FilePath "ipconfig" -ArgumentList "/flushdns" -WindowStyle Hidden -Wait
+        "#,
+        proxy_server
+      );
+
+      let _ = Command::new("powershell")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_script])
         .output();
     } else {
-      // Disable proxy
-      let _ = Command::new("reg")
-        .args(&[
-          "add",
-          "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-          "/v",
-          "ProxyEnable",
-          "/t",
-          "REG_DWORD",
-          "/d",
-          "0",
-          "/f",
-        ])
+      let ps_disable_script = r#"
+        # Disable proxy in Internet Settings
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 0 -Type DWord
+
+        # Update DefaultConnectionSettings binary blob to disabled (byte 8 = 1)
+        $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
+        if (Test-Path $connKey) {
+            $defaultConn = (Get-ItemProperty -Path $connKey -Name DefaultConnectionSettings -ErrorAction SilentlyContinue).DefaultConnectionSettings
+            if ($defaultConn) {
+                $defaultConn[8] = 1
+                Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $defaultConn
+            }
+            $savedConn = (Get-ItemProperty -Path $connKey -Name SavedConnectionSettings -ErrorAction SilentlyContinue).SavedConnectionSettings
+            if ($savedConn) {
+                $savedConn[8] = 1
+                Set-ItemProperty -Path $connKey -Name SavedConnectionSettings -Value $savedConn
+            }
+        }
+
+        # Notify WinINet
+        $sig = @'
+        [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
+        public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+'@
+        $w = Add-Type -MemberDefinition $sig -Name WinINetNotifyOff -Namespace Win32 -PassThru -ErrorAction SilentlyContinue
+        if ($w) {
+            [Win32.WinINetNotifyOff]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+            [Win32.WinINetNotifyOff]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+        }
+
+        # Flush DNS
+        Start-Process -FilePath "ipconfig" -ArgumentList "/flushdns" -WindowStyle Hidden -Wait
+      "#;
+
+      let _ = Command::new("powershell")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_disable_script])
         .output();
     }
-
-    // Refresh Windows WinINet cache so Chrome/Edge/Firefox apply proxy immediately without reboot
-    let refresh_script = r#"
-      $sig = @'
-      [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
-      public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
-'@
-      $w = Add-Type -MemberDefinition $sig -Name WinINetProxy -Namespace Win32 -PassThru -ErrorAction SilentlyContinue
-      if ($w) {
-        $w::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0)
-        $w::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0)
-      }
-    "#;
-
-    let _ = Command::new("powershell")
-      .args(&["-NoProfile", "-NonInteractive", "-Command", refresh_script])
-      .output();
   }
 
   Ok(())
@@ -128,27 +155,19 @@ async fn start_tunnel(config: ProxyConfig) -> Result<String, String> {
     config.protocol, config.host, config.port
   );
 
-  let proxy_target = if config.protocol.to_lowercase() == "socks5"
-    || config.protocol.to_lowercase() == "socks4"
-  {
-    format!("socks={}:{}", config.host, config.port)
-  } else {
-    format!("{}:{}", config.host, config.port)
-  };
-
-  if let Err(e) = apply_windows_proxy(true, &proxy_target) {
+  if let Err(e) = apply_windows_proxy(true, &config.protocol, &config.host, config.port) {
     eprintln!("[ProxyTunnel] Failed to apply Windows proxy: {}", e);
     return Err(format!("Could not apply proxy settings: {}", e));
   }
 
   TUNNEL_ACTIVE.store(true, Ordering::SeqCst);
-  Ok(format!("Proxy active: {}", proxy_target))
+  Ok(format!("Proxy active: {}://{}:{}", config.protocol, config.host, config.port))
 }
 
 #[tauri::command]
 async fn stop_tunnel() -> Result<String, String> {
   println!("[ProxyTunnel Core] Deactivating System Tunnel and restoring direct connection...");
-  let _ = apply_windows_proxy(false, "");
+  let _ = apply_windows_proxy(false, "", "", 0);
   TUNNEL_ACTIVE.store(false, Ordering::SeqCst);
   Ok("Direct routing restored".into())
 }
@@ -161,6 +180,56 @@ fn get_tunnel_status() -> bool {
 #[tauri::command]
 fn check_wintun_driver() -> bool {
   true
+}
+
+#[tauri::command]
+async fn get_real_public_ip() -> Result<RealIpInfo, String> {
+  #[cfg(target_os = "windows")]
+  {
+    let ps_cmd = r#"
+      try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $req = [System.Net.WebRequest]::Create('https://api.ipify.org?format=json')
+        $req.Timeout = 6000
+        $res = $req.GetResponse()
+        $reader = New-Object System.IO.StreamReader($res.GetResponseStream())
+        $json = $reader.ReadToEnd()
+        $reader.Close()
+        $res.Close()
+        $json
+      } catch {
+        Write-Output "ERROR: $($_.Exception.Message)"
+      }
+    "#;
+
+    if let Ok(output) = Command::new("powershell")
+      .args(&["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
+      .output()
+    {
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      if !stdout.starts_with("ERROR") && !stdout.trim().is_empty() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+          if let Some(ip) = val["ip"].as_str() {
+            return Ok(RealIpInfo {
+              ip: ip.to_string(),
+              country: None,
+              country_code: None,
+              city: None,
+              isp: None,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  Ok(RealIpInfo {
+    ip: "Direct IP".into(),
+    country: None,
+    country_code: None,
+    city: None,
+    isp: None,
+  })
 }
 
 #[tauri::command]
@@ -207,11 +276,13 @@ fn get_running_windows_processes() -> Vec<String> {
 // Window Management Commands
 #[tauri::command]
 fn minimize_window(window: Window) -> Result<(), String> {
+  println!("[ProxyTunnel] minimize_window called");
   window.minimize().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn toggle_maximize_window(window: Window) -> Result<(), String> {
+  println!("[ProxyTunnel] toggle_maximize_window called");
   if window.is_maximized().unwrap_or(false) {
     window.unmaximize().map_err(|e| e.to_string())
   } else {
@@ -221,11 +292,11 @@ fn toggle_maximize_window(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 fn close_window(window: Window, minimize_to_tray: bool) -> Result<(), String> {
+  println!("[ProxyTunnel] close_window called (minimize_to_tray: {})", minimize_to_tray);
   if minimize_to_tray {
     window.hide().map_err(|e| e.to_string())
   } else {
-    // When closing, make sure to clean up any active proxy
-    let _ = apply_windows_proxy(false, "");
+    let _ = apply_windows_proxy(false, "", "", 0);
     std::process::exit(0);
   }
 }
@@ -303,7 +374,6 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
     }
   }
 
-  // Fallback if network/offline
   Ok(UpdateInfo {
     current_version: format!("v{}", current_version),
     latest_version: format!("v{}", current_version),
@@ -335,7 +405,6 @@ async fn download_and_install_update(download_url: String) -> Result<String, Str
 
     match child {
       Ok(_) => {
-        // Exit application after 2 seconds to let the installer run cleanly
         std::thread::spawn(|| {
           std::thread::sleep(std::time::Duration::from_millis(1500));
           std::process::exit(0);
@@ -373,11 +442,11 @@ fn main() {
           }
         }
         "disconnect_tunnel" => {
-          let _ = apply_windows_proxy(false, "");
+          let _ = apply_windows_proxy(false, "", "", 0);
           TUNNEL_ACTIVE.store(false, Ordering::SeqCst);
         }
         "quit" => {
-          let _ = apply_windows_proxy(false, "");
+          let _ = apply_windows_proxy(false, "", "", 0);
           std::process::exit(0);
         }
         _ => {}
@@ -395,6 +464,7 @@ fn main() {
       stop_tunnel,
       get_tunnel_status,
       check_wintun_driver,
+      get_real_public_ip,
       get_running_windows_processes,
       minimize_window,
       toggle_maximize_window,

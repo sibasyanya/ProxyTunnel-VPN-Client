@@ -134,6 +134,36 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connectionState]);
 
+  // Real Live External IP Fetcher
+  const refreshPublicIp = async () => {
+    try {
+      // First try Tauri native command
+      const res = await tauriInvoke<{ ip: string }>('get_real_public_ip');
+      if (res && res.ip && res.ip !== 'Direct IP' && res.ip !== '') {
+        setNetworkStats((prev) => ({
+          ...prev,
+          activeIp: res.ip,
+        }));
+        return;
+      }
+      // Fallback: standard fetch
+      const resp = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
+      const data = await resp.json();
+      if (data.ip) {
+        setNetworkStats((prev) => ({
+          ...prev,
+          activeIp: data.ip,
+        }));
+      }
+    } catch (e) {
+      console.log('IP check fallback:', e);
+    }
+  };
+
+  useEffect(() => {
+    refreshPublicIp();
+  }, []);
+
   // Connection Handler with Native System Proxy & Wintun Tunnel
   const handleToggleConnection = async () => {
     if (connectionState === 'disconnected') {
@@ -167,6 +197,11 @@ export default function App() {
           ? `Туннель активен: ${activeProxy.name}`
           : `Tunnel connected: ${activeProxy.name}`
       );
+
+      // Verify IP change after Windows routing engages
+      setTimeout(() => {
+        refreshPublicIp();
+      }, 1800);
     } else if (connectionState === 'connected') {
       setConnectionState('disconnecting');
 
@@ -182,6 +217,11 @@ export default function App() {
           ? 'Туннель отключен. Прямое соединение.'
           : 'Tunnel disconnected. Direct routing.'
       );
+
+      // Verify IP restoration
+      setTimeout(() => {
+        refreshPublicIp();
+      }, 1500);
     }
   };
 
