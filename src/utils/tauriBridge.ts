@@ -3,13 +3,19 @@
 export async function tauriInvoke<T = any>(command: string, args?: Record<string, any>): Promise<T> {
   if (typeof window !== 'undefined') {
     const win = window as any;
-    // Tauri v1 standard
+    
+    // Tauri v1 standard global invoke
     if (win.__TAURI__?.invoke) {
       return win.__TAURI__.invoke(command, args);
     }
     if (win.__TAURI__?.tauri?.invoke) {
       return win.__TAURI__.tauri.invoke(command, args);
     }
+    // Tauri v1 internal IPC
+    if (typeof win.__TAURI_INVOKE__ === 'function') {
+      return win.__TAURI_INVOKE__(command, args);
+    }
+    // Tauri v2 internals
     if (win.__TAURI_INTERNALS__?.invoke) {
       return win.__TAURI_INTERNALS__.invoke(command, args);
     }
@@ -34,7 +40,7 @@ export async function minimizeWindow(): Promise<void> {
   } catch (e) {
     console.log('Tauri window.appWindow.minimize error, falling back to invoke:', e);
   }
-  // Call Rust backend command
+  // Call Rust backend command directly
   await tauriInvoke('minimize_window');
 }
 
@@ -53,7 +59,7 @@ export async function toggleMaximizeWindow(): Promise<void> {
   } catch (e) {
     console.log('Tauri window.appWindow.toggleMaximize error, falling back to invoke:', e);
   }
-  // Call Rust backend command
+  // Call Rust backend command directly
   await tauriInvoke('toggle_maximize_window');
 }
 
@@ -70,7 +76,6 @@ export async function closeWindow(minimizeToTray: boolean = true): Promise<void>
         await win.__TAURI__.window.getCurrent().hide();
         return;
       }
-      await tauriInvoke('close_window', { minimizeToTray: true });
     } else {
       if (win?.__TAURI__?.window?.appWindow?.close) {
         await win.__TAURI__.window.appWindow.close();
@@ -80,10 +85,9 @@ export async function closeWindow(minimizeToTray: boolean = true): Promise<void>
         await win.__TAURI__.window.getCurrent().close();
         return;
       }
-      await tauriInvoke('close_window', { minimizeToTray: false });
     }
   } catch (e) {
     console.log('Close window fallback invoke:', e);
-    await tauriInvoke('close_window', { minimizeToTray });
   }
+  await tauriInvoke('close_window', { minimizeToTray });
 }

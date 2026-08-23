@@ -1,4 +1,4 @@
-// ProxyTunnel Windows 11 Native Core Handler (Rust + WinINet + System Proxy + Wintun)
+// ProxyTunnel Windows 11 Native Core Handler (Rust + WinINet + System Proxy + WinHTTP)
 #![cfg_attr(
   all(not(debug_assertions), target_os = "windows"),
   windows_subsystem = "windows"
@@ -43,37 +43,96 @@ pub struct RealIpInfo {
   pub isp: Option<String>,
 }
 
-// Applies Windows Internet Settings (WinINet / System Proxy + Registry + Connections Blob)
+// Applies Windows Internet Settings (WinINet / System Proxy + Registry + Connections Blob + WinHTTP)
 // This guarantees that all browsers (Chrome, Edge, Firefox, Brave) and system apps route through the proxy immediately.
 fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> Result<(), String> {
   #[cfg(target_os = "windows")]
   {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     if enabled {
       let proto = protocol.to_lowercase();
       let proxy_server = if proto.contains("socks") {
         format!("socks={}:{}", host, port)
       } else {
-        format!("http={0}:{1};https={0}:{1}", host, port)
+        format!("{}:{}", host, port)
       };
 
-      // PowerShell script to comprehensively update Registry, DefaultConnectionSettings blob, and notify WinINet
+      // 1. Direct registry updates via reg.exe (Immediate & Fail-proof)
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+          "/v",
+          "ProxyEnable",
+          "/t",
+          "REG_DWORD",
+          "/d",
+          "1",
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+          "/v",
+          "ProxyServer",
+          "/t",
+          "REG_SZ",
+          "/d",
+          &proxy_server,
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+          "/v",
+          "ProxyOverride",
+          "/t",
+          "REG_SZ",
+          "/d",
+          "<local>;localhost;127.0.0.1",
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+          "/v",
+          "AutoDetect",
+          "/t",
+          "REG_DWORD",
+          "/d",
+          "0",
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      // 2. WinHTTP system proxy (for curl, background services, etc.)
+      let _ = Command::new("netsh")
+        .args(&["winhttp", "set", "proxy", &proxy_server, "<local>"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      // 3. Update DefaultConnectionSettings binary blob for Edge/Chrome/Brave + Notify WinINet
       let ps_script = format!(
         r#"
-        $proxyServer = "{}"
-        $override = "<local>;localhost;127.0.0.1"
-
-        # 1. Update standard Internet Settings
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 1 -Type DWord
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyServer -Value $proxyServer -Type String
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyOverride -Value $override -Type String
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name AutoDetect -Value 0 -Type DWord
-
-        # 2. Update DefaultConnectionSettings binary blob (Crucial for Edge & Chrome in Windows 10/11)
         $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
         if (Test-Path $connKey) {{
             $defaultConn = (Get-ItemProperty -Path $connKey -Name DefaultConnectionSettings -ErrorAction SilentlyContinue).DefaultConnectionSettings
             if ($defaultConn) {{
-                # Byte index 8 is the proxy flag: 0x01 = disabled, 0x03 = enabled with proxy
                 $defaultConn[8] = 3
                 Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $defaultConn
             }}
@@ -84,7 +143,6 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
             }}
         }}
 
-        # 3. Notify WinINet of settings change
         $sig = @'
         [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
         public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
@@ -94,22 +152,43 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
             [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
             [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
         }}
-
-        # 4. Flush DNS
-        Start-Process -FilePath "ipconfig" -ArgumentList "/flushdns" -WindowStyle Hidden -Wait
-        "#,
-        proxy_server
+        "#
       );
 
       let _ = Command::new("powershell")
         .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      // 4. Flush DNS
+      let _ = Command::new("ipconfig")
+        .args(&["/flushdns"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     } else {
-      let ps_disable_script = r#"
-        # Disable proxy in Internet Settings
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -Name ProxyEnable -Value 0 -Type DWord
+      // Direct registry disable
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+          "/v",
+          "ProxyEnable",
+          "/t",
+          "REG_DWORD",
+          "/d",
+          "0",
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 
-        # Update DefaultConnectionSettings binary blob to disabled (byte 8 = 1)
+      // Reset WinHTTP
+      let _ = Command::new("netsh")
+        .args(&["winhttp", "reset", "proxy"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      let ps_disable = r#"
         $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
         if (Test-Path $connKey) {
             $defaultConn = (Get-ItemProperty -Path $connKey -Name DefaultConnectionSettings -ErrorAction SilentlyContinue).DefaultConnectionSettings
@@ -124,7 +203,6 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
             }
         }
 
-        # Notify WinINet
         $sig = @'
         [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
         public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
@@ -134,13 +212,16 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
             [Win32.WinINetNotifyOff]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
             [Win32.WinINetNotifyOff]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
         }
-
-        # Flush DNS
-        Start-Process -FilePath "ipconfig" -ArgumentList "/flushdns" -WindowStyle Hidden -Wait
       "#;
 
       let _ = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_disable_script])
+        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_disable])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      let _ = Command::new("ipconfig")
+        .args(&["/flushdns"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     }
   }
@@ -186,6 +267,9 @@ fn check_wintun_driver() -> bool {
 async fn get_real_public_ip() -> Result<RealIpInfo, String> {
   #[cfg(target_os = "windows")]
   {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let ps_cmd = r#"
       try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -204,6 +288,7 @@ async fn get_real_public_ip() -> Result<RealIpInfo, String> {
 
     if let Ok(output) = Command::new("powershell")
       .args(&["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
+      .creation_flags(CREATE_NO_WINDOW)
       .output()
     {
       let stdout = String::from_utf8_lossy(&output.stdout);
@@ -236,6 +321,9 @@ async fn get_real_public_ip() -> Result<RealIpInfo, String> {
 fn get_running_windows_processes() -> Vec<String> {
   #[cfg(target_os = "windows")]
   {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     if let Ok(output) = Command::new("powershell")
       .args(&[
         "-NoProfile",
@@ -243,6 +331,7 @@ fn get_running_windows_processes() -> Vec<String> {
         "-Command",
         "Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object -ExpandProperty ProcessName",
       ])
+      .creation_flags(CREATE_NO_WINDOW)
       .output()
     {
       let stdout = String::from_utf8_lossy(&output.stdout);
@@ -291,9 +380,10 @@ fn toggle_maximize_window(window: Window) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn close_window(window: Window, minimize_to_tray: bool) -> Result<(), String> {
-  println!("[ProxyTunnel] close_window called (minimize_to_tray: {})", minimize_to_tray);
-  if minimize_to_tray {
+fn close_window(window: Window, minimize_to_tray: Option<bool>) -> Result<(), String> {
+  let to_tray = minimize_to_tray.unwrap_or(true);
+  println!("[ProxyTunnel] close_window called (minimize_to_tray: {})", to_tray);
+  if to_tray {
     window.hide().map_err(|e| e.to_string())
   } else {
     let _ = apply_windows_proxy(false, "", "", 0);
@@ -310,6 +400,9 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
 
   #[cfg(target_os = "windows")]
   {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let ps_cmd = format!(
       r#"
       try {{
@@ -332,6 +425,7 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
 
     if let Ok(output) = Command::new("powershell")
       .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+      .creation_flags(CREATE_NO_WINDOW)
       .output()
     {
       let stdout = String::from_utf8_lossy(&output.stdout);
@@ -388,6 +482,9 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
 async fn download_and_install_update(download_url: String) -> Result<String, String> {
   #[cfg(target_os = "windows")]
   {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let ps_script = format!(
       r#"
       $dest = "$env:TEMP\ProxyTunnel_Setup_Update.exe"
@@ -401,6 +498,7 @@ async fn download_and_install_update(download_url: String) -> Result<String, Str
 
     let child = Command::new("powershell")
       .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+      .creation_flags(CREATE_NO_WINDOW)
       .spawn();
 
     match child {

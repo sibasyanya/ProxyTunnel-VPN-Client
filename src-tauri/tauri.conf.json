@@ -11,11 +11,24 @@
     "version": "1.1.0"
   },
   "tauri": {
+    "withGlobalTauri": true,
     "allowlist": {
       "all": true,
+      "window": {
+        "all": true,
+        "close": true,
+        "hide": true,
+        "show": true,
+        "maximize": true,
+        "unmaximize": true,
+        "minimize": true,
+        "unminimize": true,
+        "startDragging": true
+      },
       "shell": {
         "all": true,
-        "open": true
+        "open": true,
+        "execute": true
       },
       "notification": {
         "all": true
@@ -47,6 +60,7 @@
     },
     "windows": [
       {
+        "label": "main",
         "fullscreen": false,
         "height": 780,
         "resizable": true,
