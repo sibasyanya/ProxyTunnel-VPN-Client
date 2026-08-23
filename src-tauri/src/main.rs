@@ -318,7 +318,7 @@ async fn get_real_public_ip() -> Result<RealIpInfo, String> {
   })
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct RealProcessItem {
   pub name: String,
   pub executable: String,
