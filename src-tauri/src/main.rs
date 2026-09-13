@@ -304,7 +304,7 @@ async fn start_local_proxy_bridge(
     tokio::select! {
       res = listener.accept() => {
         match res {
-          Ok((client_stream, client_addr)) => {
+          Ok((client_stream, _client_addr)) => {
             let upstream_cfg = Arc::clone(&cfg);
             let handle_opt = app_handle.clone();
             tokio::spawn(async move {
@@ -400,7 +400,7 @@ async fn handle_bridge_connection(
       raw_header.to_string()
     };
 
-    if let Err(e) = upstream_stream.write_all(modified_req.as_bytes()).await {
+    if let Err(_e) = upstream_stream.write_all(modified_req.as_bytes()).await {
       return;
     }
 
