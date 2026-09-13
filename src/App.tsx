@@ -211,16 +211,21 @@ export default function App() {
       try {
         addLog('INFO', `Connecting to upstream ${activeProxy.protocol.toUpperCase()} ${activeProxy.host}:${activeProxy.port}...`);
         // Attempt native Tauri invocation
+        const bypassList = bypassApps
+          .filter((a) => a.enabled)
+          .map((a) => a.executable || a.name || '')
+          .filter(Boolean);
+
         await tauriInvoke('start_tunnel', {
           config: {
-            protocol: activeProxy.protocol,
-            host: activeProxy.host,
-            port: activeProxy.port,
-            username: activeProxy.username || null,
-            password: activeProxy.password || null,
-            dns_server: settings.dnsProvider,
-            bypass_apps: bypassApps.filter((a) => a.enabled).map((a) => a.processName),
-            bypass_mode: settings.bypassMode,
+            protocol: String(activeProxy.protocol || 'socks5'),
+            host: String(activeProxy.host || '').trim(),
+            port: Number(activeProxy.port) || 1080,
+            username: activeProxy.username ? String(activeProxy.username) : null,
+            password: activeProxy.password ? String(activeProxy.password) : null,
+            dns_server: settings.dnsProvider ? String(settings.dnsProvider) : null,
+            bypass_apps: bypassList,
+            bypass_mode: settings.bypassMode ? String(settings.bypassMode) : 'direct',
           },
         });
         addLog('SUCCESS', `Proxy bridge active on 127.0.0.1:10800. Windows proxy redirected.`);
