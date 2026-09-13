@@ -15,7 +15,7 @@ import {
   AlertCircle,
   Laptop,
 } from 'lucide-react';
-import { ConnectionState, ProxyProfile, NetworkStats, AppLanguage, BypassApp, BypassMode } from '../types';
+import { ConnectionState, ProxyProfile, NetworkStats, AppLanguage, BypassApp, BypassMode, TunnelLogItem } from '../types';
 import { translations } from '../translations';
 import { formatSpeed, formatBytes, formatSeconds, getCountryFlag } from '../utils/formatters';
 
@@ -30,6 +30,8 @@ interface DashboardViewProps {
   bypassApps: BypassApp[];
   bypassMode: BypassMode;
   onNavigateToTab: (tab: any) => void;
+  tunnelLogs: TunnelLogItem[];
+  onClearLogs: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -43,9 +45,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   bypassApps,
   bypassMode,
   onNavigateToTab,
+  tunnelLogs,
+  onClearLogs,
 }) => {
   const t = translations[language];
   const [showServerPicker, setShowServerPicker] = useState(false);
+  const [showLogs, setShowLogs] = useState(true);
 
   const isConnected = connectionState === 'connected';
   const isConnecting = connectionState === 'connecting';
@@ -402,6 +407,69 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {isConnected ? 'Driver: Wintun.sys (Layer 3)' : 'Default Gateway 192.168.1.1'}
           </div>
         </div>
+      </div>
+
+      {/* Real-time Diagnostics & Tunnel Traffic Console */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+        <div className="px-4 py-3 bg-slate-950/60 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+            <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+              {language === 'ru' ? 'Журнал туннелирования и трафика (Live Logs)' : 'Tunnel & Traffic Activity Logs'}
+            </h3>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+              127.0.0.1:10800 &rarr; {activeProxy ? `${activeProxy.host}:${activeProxy.port}` : 'None'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClearLogs}
+              className="text-[11px] px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 transition"
+            >
+              {language === 'ru' ? 'Очистить' : 'Clear'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowLogs(!showLogs)}
+              className="text-[11px] px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 transition"
+            >
+              {showLogs ? (language === 'ru' ? 'Свернуть' : 'Collapse') : (language === 'ru' ? 'Развернуть' : 'Expand')}
+            </button>
+          </div>
+        </div>
+
+        {showLogs && (
+          <div className="p-3 bg-black/40 font-mono text-xs max-h-48 overflow-y-auto space-y-1">
+            {tunnelLogs.length === 0 ? (
+              <div className="text-slate-500 py-3 text-center text-xs">
+                {language === 'ru'
+                  ? 'Ожидание запуска туннеля... Логи подключений будут выводиться здесь в реальном времени.'
+                  : 'Awaiting tunnel activity... Real-time connection events will stream here.'}
+              </div>
+            ) : (
+              tunnelLogs.map((log, idx) => (
+                <div key={idx} className="flex items-start gap-2 leading-relaxed">
+                  <span className="text-slate-500 shrink-0">[{log.timestamp}]</span>
+                  <span
+                    className={`shrink-0 font-bold ${
+                      log.level === 'SUCCESS'
+                        ? 'text-emerald-400'
+                        : log.level === 'ERROR'
+                        ? 'text-red-400'
+                        : log.level === 'WARN'
+                        ? 'text-amber-400'
+                        : 'text-sky-400'
+                    }`}
+                  >
+                    [{log.level}]
+                  </span>
+                  <span className="text-slate-300 break-all">{log.message}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

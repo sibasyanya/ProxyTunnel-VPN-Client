@@ -139,3 +139,18 @@ export async function fetchRunningProcesses(): Promise<Array<{ name: string; exe
   }
   return [];
 }
+
+export function tauriListen<T = any>(event: string, handler: (payload: T) => void): () => void {
+  if (typeof window !== 'undefined') {
+    const win = window as any;
+    if (win.__TAURI__?.event?.listen) {
+      let unlistenPromise = win.__TAURI__.event.listen(event, (ev: any) => {
+        handler(ev.payload);
+      });
+      return () => {
+        unlistenPromise.then((unlisten: any) => unlisten());
+      };
+    }
+  }
+  return () => {};
+}

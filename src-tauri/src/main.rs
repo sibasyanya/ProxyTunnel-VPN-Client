@@ -1,16 +1,22 @@
-// ProxyTunnel Windows 11 Native Core Handler (Rust + WinINet + System Proxy + WinHTTP)
+// ProxyTunnel Windows 11 Native Core Handler (Rust + WinINet + System Proxy + Local Auth Bridge + WinHTTP)
 #![cfg_attr(
   all(not(debug_assertions), target_os = "windows"),
   windows_subsystem = "windows"
 )]
 
+use base64::Engine;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{
   CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, Window,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 
 static TUNNEL_ACTIVE: AtomicBool = AtomicBool::new(false);
+const LOCAL_BRIDGE_PORT: u16 = 10800;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct ProxyConfig {
@@ -24,7 +30,7 @@ pub struct ProxyConfig {
   pub bypass_mode: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct UpdateInfo {
   pub current_version: String,
   pub latest_version: String,
@@ -34,7 +40,7 @@ pub struct UpdateInfo {
   pub release_name: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct RealIpInfo {
   pub ip: String,
   pub country: Option<String>,
@@ -43,24 +49,31 @@ pub struct RealIpInfo {
   pub isp: Option<String>,
 }
 
-// Applies Windows Internet Settings (WinINet / System Proxy + Registry + Connections Blob + WinHTTP)
-// This guarantees that all browsers (Chrome, Edge, Firefox, Brave) and system apps route through the proxy immediately.
-fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> Result<(), String> {
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TunnelLogMessage {
+  pub timestamp: String,
+  pub level: String,
+  pub message: String,
+}
+
+// Global shutdown signal for the background local proxy bridge
+static BRIDGE_SHUTDOWN_TX: once_cell::sync::Lazy<broadcast::Sender<()>> =
+  once_cell::sync::Lazy::new(|| {
+    let (tx, _) = broadcast::channel(1);
+    tx
+  });
+
+// Applies Windows Internet Settings to point to the local authenticated bridge or disable proxy
+fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
   #[cfg(target_os = "windows")]
   {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     if enabled {
-      let proto = protocol.to_lowercase();
-      let proxy_server = if proto.contains("socks") {
-        // Multi-protocol string so Telegram, Windows Store apps and browsers all catch SOCKS5
-        format!("http={0}:{1};https={0}:{1};socks={0}:{1}", host, port)
-      } else {
-        format!("http={0}:{1};https={0}:{1}", host, port)
-      };
+      let proxy_server = format!("127.0.0.1:{}", local_port);
 
-      // 1. Direct registry updates via reg.exe (Immediate & Fail-proof)
+      // 1. Direct registry updates via reg.exe
       let _ = Command::new("reg")
         .args(&[
           "add",
@@ -121,7 +134,7 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
-      // 2. WinHTTP system proxy (for curl, background services, etc.)
+      // 2. WinHTTP system proxy
       let _ = Command::new("netsh")
         .args(&["winhttp", "set", "proxy", &proxy_server, "<local>"])
         .creation_flags(CREATE_NO_WINDOW)
@@ -230,27 +243,228 @@ fn apply_windows_proxy(enabled: bool, protocol: &str, host: &str, port: u16) -> 
   Ok(())
 }
 
+// Emits structured logs to Tauri frontend & console
+fn emit_log<R: tauri::Runtime>(app_handle: Option<&tauri::AppHandle<R>>, level: &str, msg: &str) {
+  let now = chrono_or_fallback_time();
+  println!("[ProxyTunnel {}] [{}] {}", level, now, msg);
+  if let Some(handle) = app_handle {
+    let _ = handle.emit_all(
+      "tunnel-log",
+      TunnelLogMessage {
+        timestamp: now,
+        level: level.to_string(),
+        message: msg.to_string(),
+      },
+    );
+  }
+}
+
+fn chrono_or_fallback_time() -> String {
+  let output = Command::new("powershell")
+    .args(&["-NoProfile", "-Command", "Get-Date -Format 'HH:mm:ss'"])
+    .output();
+  if let Ok(out) = output {
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !t.is_empty() {
+      return t;
+    }
+  }
+  "NOW".to_string()
+}
+
+// Local bridge worker: listens on 127.0.0.1:LOCAL_BRIDGE_PORT and proxies with upstream authentication
+async fn start_local_proxy_bridge(
+  config: ProxyConfig,
+  app_handle: Option<tauri::AppHandle>,
+  mut shutdown_rx: broadcast::Receiver<()>,
+) {
+  let bind_addr = format!("127.0.0.1:{}", LOCAL_BRIDGE_PORT);
+  let listener = match TcpListener::bind(&bind_addr).await {
+    Ok(l) => {
+      emit_log(
+        app_handle.as_ref(),
+        "INFO",
+        &format!("Local Proxy Bridge active on {}", bind_addr),
+      );
+      l
+    }
+    Err(e) => {
+      emit_log(
+        app_handle.as_ref(),
+        "ERROR",
+        &format!("Failed to bind local bridge on {}: {}", bind_addr, e),
+      );
+      return;
+    }
+  };
+
+  let cfg = Arc::new(config);
+
+  loop {
+    tokio::select! {
+      res = listener.accept() => {
+        match res {
+          Ok((client_stream, client_addr)) => {
+            let upstream_cfg = Arc::clone(&cfg);
+            let handle_opt = app_handle.clone();
+            tokio::spawn(async move {
+              handle_bridge_connection(client_stream, upstream_cfg, handle_opt).await;
+            });
+          }
+          Err(e) => {
+            emit_log(app_handle.as_ref(), "WARN", &format!("Listener accept error: {}", e));
+          }
+        }
+      }
+      _ = shutdown_rx.recv() => {
+        emit_log(app_handle.as_ref(), "INFO", "Local Proxy Bridge shutting down.");
+        break;
+      }
+    }
+  }
+}
+
+async fn handle_bridge_connection(
+  mut client_stream: TcpStream,
+  config: Arc<ProxyConfig>,
+  app_handle: Option<tauri::AppHandle>,
+) {
+  let mut initial_buf = [0u8; 4096];
+  let n = match client_stream.read(&mut initial_buf).await {
+    Ok(n) if n > 0 => n,
+    _ => return,
+  };
+
+  let raw_header = String::from_utf8_lossy(&initial_buf[..n]);
+  let is_connect = raw_header.starts_with("CONNECT ");
+
+  let upstream_target = format!("{}:{}", config.host, config.port);
+  let mut upstream_stream = match TcpStream::connect(&upstream_target).await {
+    Ok(s) => s,
+    Err(e) => {
+      emit_log(
+        app_handle.as_ref(),
+        "ERROR",
+        &format!("Could not connect to upstream proxy {}: {}", upstream_target, e),
+      );
+      return;
+    }
+  };
+
+  // Build basic auth header if credentials exist
+  let mut auth_header = String::new();
+  if let (Some(u), Some(p)) = (&config.username, &config.password) {
+    if !u.is_empty() {
+      let combined = format!("{}:{}", u, p);
+      let encoded = base64::engine::general_purpose::STANDARD.encode(combined.as_bytes());
+      auth_header = format!("Proxy-Authorization: Basic {}\r\n", encoded);
+    }
+  }
+
+  if is_connect {
+    // For HTTPS CONNECT: inject Proxy-Authorization if present
+    let modified_connect = if !auth_header.is_empty() && !raw_header.contains("Proxy-Authorization:") {
+      if let Some(pos) = raw_header.find("\r\n") {
+        let (first_line, rest) = raw_header.split_at(pos + 2);
+        format!("{}{}{}", first_line, auth_header, rest)
+      } else {
+        raw_header.to_string()
+      }
+    } else {
+      raw_header.to_string()
+    };
+
+    if let Err(e) = upstream_stream.write_all(modified_connect.as_bytes()).await {
+      emit_log(app_handle.as_ref(), "ERROR", &format!("Upstream write error: {}", e));
+      return;
+    }
+
+    // Tunnel bi-directionally
+    let (mut client_read, mut client_write) = client_stream.into_split();
+    let (mut upstream_read, mut upstream_write) = upstream_stream.into_split();
+
+    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+
+    let _ = tokio::try_join!(client_to_upstream, upstream_to_client);
+  } else {
+    // For plain HTTP proxy request: inject Proxy-Authorization
+    let modified_req = if !auth_header.is_empty() && !raw_header.contains("Proxy-Authorization:") {
+      if let Some(pos) = raw_header.find("\r\n") {
+        let (first_line, rest) = raw_header.split_at(pos + 2);
+        format!("{}{}{}", first_line, auth_header, rest)
+      } else {
+        raw_header.to_string()
+      }
+    } else {
+      raw_header.to_string()
+    };
+
+    if let Err(e) = upstream_stream.write_all(modified_req.as_bytes()).await {
+      return;
+    }
+
+    let (mut client_read, mut client_write) = client_stream.into_split();
+    let (mut upstream_read, mut upstream_write) = upstream_stream.into_split();
+
+    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+
+    let _ = tokio::try_join!(client_to_upstream, upstream_to_client);
+  }
+}
+
 #[tauri::command]
-async fn start_tunnel(config: ProxyConfig) -> Result<String, String> {
-  println!(
-    "[ProxyTunnel Core] Activating System Tunnel for: {}://{}:{}",
-    config.protocol, config.host, config.port
+async fn start_tunnel(app_handle: tauri::AppHandle, config: ProxyConfig) -> Result<String, String> {
+  emit_log(
+    Some(&app_handle),
+    "INFO",
+    &format!(
+      "Starting tunnel to {}:{} (auth: {})",
+      config.host,
+      config.port,
+      config.username.is_some()
+    ),
   );
 
-  if let Err(e) = apply_windows_proxy(true, &config.protocol, &config.host, config.port) {
-    eprintln!("[ProxyTunnel] Failed to apply Windows proxy: {}", e);
+  // 1. If bridge already running, send shutdown first
+  let _ = BRIDGE_SHUTDOWN_TX.send(());
+
+  // 2. Launch new local authenticated proxy bridge
+  let bridge_config = config.clone();
+  let handle_clone = app_handle.clone();
+  let shutdown_rx = BRIDGE_SHUTDOWN_TX.subscribe();
+
+  tokio::spawn(async move {
+    start_local_proxy_bridge(bridge_config, Some(handle_clone), shutdown_rx).await;
+  });
+
+  // Give local listener a moment to bind
+  tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+  // 3. Configure Windows system proxy to point to 127.0.0.1:LOCAL_BRIDGE_PORT
+  if let Err(e) = apply_windows_proxy(true, LOCAL_BRIDGE_PORT) {
+    emit_log(Some(&app_handle), "ERROR", &format!("Failed to apply Windows proxy: {}", e));
     return Err(format!("Could not apply proxy settings: {}", e));
   }
 
   TUNNEL_ACTIVE.store(true, Ordering::SeqCst);
-  Ok(format!("Proxy active: {}://{}:{}", config.protocol, config.host, config.port))
+  emit_log(
+    Some(&app_handle),
+    "SUCCESS",
+    &format!("Tunnel actively forwarding via 127.0.0.1:{}", LOCAL_BRIDGE_PORT),
+  );
+
+  Ok(format!("Proxy active via local bridge: 127.0.0.1:{}", LOCAL_BRIDGE_PORT))
 }
 
 #[tauri::command]
-async fn stop_tunnel() -> Result<String, String> {
-  println!("[ProxyTunnel Core] Deactivating System Tunnel and restoring direct connection...");
-  let _ = apply_windows_proxy(false, "", "", 0);
+async fn stop_tunnel(app_handle: tauri::AppHandle) -> Result<String, String> {
+  emit_log(Some(&app_handle), "INFO", "Stopping tunnel and restoring direct connection...");
+  let _ = apply_windows_proxy(false, 0);
+  let _ = BRIDGE_SHUTDOWN_TX.send(());
   TUNNEL_ACTIVE.store(false, Ordering::SeqCst);
+  emit_log(Some(&app_handle), "SUCCESS", "Direct routing restored.");
   Ok("Direct routing restored".into())
 }
 
@@ -452,13 +666,11 @@ async fn open_exe_file_dialog() -> Result<Option<String>, String> {
 // Window Management Commands
 #[tauri::command]
 fn minimize_window(window: Window) -> Result<(), String> {
-  println!("[ProxyTunnel] minimize_window called");
   window.minimize().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn toggle_maximize_window(window: Window) -> Result<(), String> {
-  println!("[ProxyTunnel] toggle_maximize_window called");
   if window.is_maximized().unwrap_or(false) {
     window.unmaximize().map_err(|e| e.to_string())
   } else {
@@ -469,11 +681,10 @@ fn toggle_maximize_window(window: Window) -> Result<(), String> {
 #[tauri::command]
 fn close_window(window: Window, minimize_to_tray: Option<bool>) -> Result<(), String> {
   let to_tray = minimize_to_tray.unwrap_or(true);
-  println!("[ProxyTunnel] close_window called (minimize_to_tray: {})", to_tray);
   if to_tray {
     window.hide().map_err(|e| e.to_string())
   } else {
-    let _ = apply_windows_proxy(false, "", "", 0);
+    let _ = apply_windows_proxy(false, 0);
     std::process::exit(0);
   }
 }
@@ -481,7 +692,7 @@ fn close_window(window: Window, minimize_to_tray: Option<bool>) -> Result<(), St
 // GitHub Auto-Updater Commands
 #[tauri::command]
 async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, String> {
-  let current_version = "1.1.0".to_string();
+  let current_version = "1.3.0".to_string();
   let repo = repo_name.unwrap_or_else(|| "sibasyanya/ProxyTunnel-VPN-Client".into());
   let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
@@ -520,7 +731,7 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
           let tag_name = val["tag_name"]
             .as_str()
-            .unwrap_or("v1.1.0")
+            .unwrap_or("v1.3.0")
             .trim_start_matches('v')
             .to_string();
           let release_name = val["name"].as_str().unwrap_or("Release").to_string();
@@ -561,7 +772,7 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
     has_update: false,
     download_url: None,
     release_notes: Some("You have the latest version installed.".into()),
-    release_name: Some("ProxyTunnel v1.1.0 Stable".into()),
+    release_name: Some("ProxyTunnel v1.3.0 Stable".into()),
   })
 }
 
@@ -627,11 +838,11 @@ fn main() {
           }
         }
         "disconnect_tunnel" => {
-          let _ = apply_windows_proxy(false, "", "", 0);
+          let _ = apply_windows_proxy(false, 0);
           TUNNEL_ACTIVE.store(false, Ordering::SeqCst);
         }
         "quit" => {
-          let _ = apply_windows_proxy(false, "", "", 0);
+          let _ = apply_windows_proxy(false, 0);
           std::process::exit(0);
         }
         _ => {}

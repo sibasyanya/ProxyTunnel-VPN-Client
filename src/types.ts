@@ -70,4 +70,10 @@ export interface AppSettings {
   autoConnectOnLaunch: boolean;
 }
 
+export interface TunnelLogItem {
+  timestamp: string;
+  level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
+  message: string;
+}
+
 export type ActiveTab = 'dashboard' | 'proxies' | 'bypass' | 'help' | 'settings';

@@ -8,6 +8,7 @@ import {
   AppSettings,
   ActiveTab,
   AppLanguage,
+  TunnelLogItem,
 } from './types';
 import {
   initialProxies,
@@ -81,6 +82,40 @@ export default function App() {
 
   // Toast / notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Real-time Tunnel Activity Logs
+  const [tunnelLogs, setTunnelLogs] = useState<TunnelLogItem[]>(() => [
+    {
+      timestamp: new Date().toLocaleTimeString(),
+      level: 'INFO',
+      message: 'ProxyTunnel Core v1.3.0 initialized. Ready for routing.',
+    },
+  ]);
+
+  const addLog = (level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS', message: string) => {
+    setTunnelLogs((prev) => [
+      ...prev.slice(-99),
+      {
+        timestamp: new Date().toLocaleTimeString(),
+        level,
+        message,
+      },
+    ]);
+  };
+
+  // Listen to live Rust backend events
+  useEffect(() => {
+    import('./utils/tauriBridge').then(({ tauriListen }) => {
+      const unlisten = tauriListen<TunnelLogItem>('tunnel-log', (log) => {
+        if (log && log.message) {
+          setTunnelLogs((prev) => [...prev.slice(-99), log]);
+        }
+      });
+      return () => {
+        unlisten();
+      };
+    });
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -174,6 +209,7 @@ export default function App() {
       setConnectionState('connecting');
 
       try {
+        addLog('INFO', `Connecting to upstream ${activeProxy.protocol.toUpperCase()} ${activeProxy.host}:${activeProxy.port}...`);
         // Attempt native Tauri invocation
         await tauriInvoke('start_tunnel', {
           config: {
@@ -187,7 +223,9 @@ export default function App() {
             bypass_mode: settings.bypassMode,
           },
         });
+        addLog('SUCCESS', `Proxy bridge active on 127.0.0.1:10800. Windows proxy redirected.`);
       } catch (e) {
+        addLog('ERROR', `Connection error: ${e}`);
         console.log('Tauri start_tunnel (browser fallback):', e);
       }
 
@@ -206,8 +244,11 @@ export default function App() {
       setConnectionState('disconnecting');
 
       try {
+        addLog('INFO', 'Stopping proxy tunnel and resetting Windows proxy...');
         await tauriInvoke('stop_tunnel');
+        addLog('SUCCESS', 'Direct routing restored. Windows proxy reset.');
       } catch (e) {
+        addLog('WARN', `Stop tunnel error: ${e}`);
         console.log('Tauri stop_tunnel (browser fallback):', e);
       }
 
@@ -432,6 +473,8 @@ export default function App() {
               bypassApps={bypassApps}
               bypassMode={settings.bypassMode}
               onNavigateToTab={setActiveTab}
+              tunnelLogs={tunnelLogs}
+              onClearLogs={() => setTunnelLogs([])}
             />
           )}
 
