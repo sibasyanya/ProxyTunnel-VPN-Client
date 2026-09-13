@@ -71,7 +71,7 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     if enabled {
-      let proxy_server = format!("127.0.0.1:{}", local_port);
+      let proxy_server = format!("http=127.0.0.1:{0};https=127.0.0.1:{0}", local_port);
 
       // 1. Direct registry updates via reg.exe
       let _ = Command::new("reg")
@@ -113,7 +113,7 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
           "/t",
           "REG_SZ",
           "/d",
-          "<local>;localhost;127.0.0.1",
+          "<local>;localhost;127.0.0.1;127.0.0.*",
           "/f",
         ])
         .creation_flags(CREATE_NO_WINDOW)
@@ -136,25 +136,39 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
 
       // 2. WinHTTP system proxy
       let _ = Command::new("netsh")
-        .args(&["winhttp", "set", "proxy", &proxy_server, "<local>"])
+        .args(&["winhttp", "set", "proxy", &proxy_server, "<local>;localhost;127.0.0.1"])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
       // 3. Update DefaultConnectionSettings binary blob for Edge/Chrome/Brave + Notify WinINet
       let ps_script = format!(
         r#"
+        $proxy = "{}"
         $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
         if (Test-Path $connKey) {{
-            $defaultConn = (Get-ItemProperty -Path $connKey -Name DefaultConnectionSettings -ErrorAction SilentlyContinue).DefaultConnectionSettings
-            if ($defaultConn) {{
-                $defaultConn[8] = 3
-                Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $defaultConn
-            }}
-            $savedConn = (Get-ItemProperty -Path $connKey -Name SavedConnectionSettings -ErrorAction SilentlyContinue).SavedConnectionSettings
-            if ($savedConn) {{
-                $savedConn[8] = 3
-                Set-ItemProperty -Path $connKey -Name SavedConnectionSettings -Value $savedConn
-            }}
+            # Construct standard WinINet connection settings binary blob
+            $proxyBytes = [System.Text.Encoding]::ASCII.GetBytes($proxy)
+            $pLen = [byte]$proxyBytes.Length
+            # 70-byte baseline header with flags: 0x03 (Proxy enabled, manual)
+            $blob = [byte[]]@(
+                0x46, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x03, 0x00, 0x00, 0x00,
+                $pLen, 0x00, 0x00, 0x00
+            ) + $proxyBytes + @(
+                0x07, 0x00, 0x00, 0x00
+            ) + [System.Text.Encoding]::ASCII.GetBytes("<local>") + @(
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00
+            )
+            Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $blob -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $connKey -Name SavedConnectionSettings -Value $blob -ErrorAction SilentlyContinue
         }}
 
         $sig = @'
@@ -166,7 +180,8 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
             [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
             [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
         }}
-        "#
+        "#,
+        proxy_server
       );
 
       let _ = Command::new("powershell")
@@ -324,19 +339,21 @@ async fn start_local_proxy_bridge(
   }
 }
 
+// Handles upstream handshake (either SOCKS5 or HTTP) and tunnels the client traffic
 async fn handle_bridge_connection(
   mut client_stream: TcpStream,
   config: Arc<ProxyConfig>,
   app_handle: Option<tauri::AppHandle>,
 ) {
-  let mut initial_buf = [0u8; 4096];
+  let mut initial_buf = [0u8; 8192];
   let n = match client_stream.read(&mut initial_buf).await {
     Ok(n) if n > 0 => n,
     _ => return,
   };
 
   let raw_header = String::from_utf8_lossy(&initial_buf[..n]);
-  let is_connect = raw_header.starts_with("CONNECT ");
+  let is_http_connect = raw_header.starts_with("CONNECT ");
+  let is_socks5_client = initial_buf[0] == 0x05;
 
   let upstream_target = format!("{}:{}", config.host, config.port);
   let mut upstream_stream = match TcpStream::connect(&upstream_target).await {
@@ -351,7 +368,159 @@ async fn handle_bridge_connection(
     }
   };
 
-  // Build basic auth header if credentials exist
+  let is_upstream_socks5 = config.protocol.to_lowercase().contains("socks");
+
+  if is_upstream_socks5 {
+    // Upstream is SOCKS5.
+    // If incoming request is HTTP CONNECT (from Windows system proxy / Edge / Chrome):
+    // parse host and port, perform SOCKS5 handshake with upstream, return "200 Connection Established" to client!
+    if is_http_connect {
+      let first_line = raw_header.lines().next().unwrap_or("");
+      let parts: Vec<&str> = first_line.split_whitespace().collect();
+      if parts.len() < 2 {
+        return;
+      }
+      let target_addr = parts[1]; // e.g. "2ip.ru:443"
+      let addr_parts: Vec<&str> = target_addr.split(':').collect();
+      if addr_parts.len() != 2 {
+        return;
+      }
+      let target_host = addr_parts[0];
+      let target_port: u16 = match addr_parts[1].parse() {
+        Ok(p) => p,
+        Err(_) => 443,
+      };
+
+      // 1. SOCKS5 Auth Handshake to Upstream
+      let has_auth = config.username.as_ref().map_or(false, |u| !u.is_empty());
+      if has_auth {
+        // Offer NO_AUTH (0x00) and USER_PASS (0x02)
+        if let Err(_) = upstream_stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await {
+          return;
+        }
+      } else {
+        if let Err(_) = upstream_stream.write_all(&[0x05, 0x01, 0x00]).await {
+          return;
+        }
+      }
+
+      let mut auth_resp = [0u8; 2];
+      if let Err(_) = upstream_stream.read_exact(&mut auth_resp).await {
+        return;
+      }
+      if auth_resp[0] != 0x05 {
+        return;
+      }
+
+      if auth_resp[1] == 0x02 {
+        // Authenticate with user/pass
+        let user = config.username.clone().unwrap_or_default();
+        let pass = config.password.clone().unwrap_or_default();
+        let mut auth_req = Vec::new();
+        auth_req.push(0x01); // subnegotiation version
+        auth_req.push(user.len() as u8);
+        auth_req.extend_from_slice(user.as_bytes());
+        auth_req.push(pass.len() as u8);
+        auth_req.extend_from_slice(pass.as_bytes());
+
+        if let Err(_) = upstream_stream.write_all(&auth_req).await {
+          return;
+        }
+
+        let mut user_auth_resp = [0u8; 2];
+        if let Err(_) = upstream_stream.read_exact(&mut user_auth_resp).await {
+          return;
+        }
+        if user_auth_resp[1] != 0x00 {
+          emit_log(
+            app_handle.as_ref(),
+            "ERROR",
+            "Upstream SOCKS5 Authentication failed (bad username/password)",
+          );
+          return;
+        }
+      }
+
+      // 2. SOCKS5 Connect Command to Upstream (0x01 = CONNECT, 0x03 = DOMAINNAME)
+      let mut cmd_req = Vec::new();
+      cmd_req.extend_from_slice(&[0x05, 0x01, 0x00, 0x03]);
+      cmd_req.push(target_host.len() as u8);
+      cmd_req.extend_from_slice(target_host.as_bytes());
+      cmd_req.extend_from_slice(&target_port.to_be_bytes());
+
+      if let Err(_) = upstream_stream.write_all(&cmd_req).await {
+        return;
+      }
+
+      let mut cmd_resp_hdr = [0u8; 4];
+      if let Err(_) = upstream_stream.read_exact(&mut cmd_resp_hdr).await {
+        return;
+      }
+      if cmd_resp_hdr[1] != 0x00 {
+        emit_log(
+          app_handle.as_ref(),
+          "ERROR",
+          &format!("Upstream SOCKS5 connect failed code: {:#x}", cmd_resp_hdr[1]),
+        );
+        return;
+      }
+
+      // Skip bound address in response
+      match cmd_resp_hdr[3] {
+        0x01 => {
+          let mut ip4 = [0u8; 4 + 2];
+          let _ = upstream_stream.read_exact(&mut ip4).await;
+        }
+        0x03 => {
+          let mut len = [0u8; 1];
+          let _ = upstream_stream.read_exact(&mut len).await;
+          let mut domain = vec![0u8; len[0] as usize + 2];
+          let _ = upstream_stream.read_exact(&mut domain).await;
+        }
+        0x04 => {
+          let mut ip6 = [0u8; 16 + 2];
+          let _ = upstream_stream.read_exact(&mut ip6).await;
+        }
+        _ => {}
+      }
+
+      // 3. Respond 200 Connection Established to Browser (Windows/Edge/Chrome)
+      let ok_resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
+      if let Err(_) = client_stream.write_all(ok_resp.as_bytes()).await {
+        return;
+      }
+
+      emit_log(
+        app_handle.as_ref(),
+        "INFO",
+        &format!("Tunnel established -> {}", target_addr),
+      );
+
+      // 4. Bi-directional raw data pipe
+      let (mut c_read, mut c_write) = client_stream.into_split();
+      let (mut u_read, mut u_write) = upstream_stream.into_split();
+
+      let client_to_upstream = tokio::io::copy(&mut c_read, &mut u_write);
+      let upstream_to_client = tokio::io::copy(&mut u_read, &mut c_write);
+
+      let _ = tokio::try_join!(client_to_upstream, upstream_to_client);
+      return;
+    } else if is_socks5_client {
+      // Direct SOCKS5 client forward
+      if let Err(_) = upstream_stream.write_all(&initial_buf[..n]).await {
+        return;
+      }
+      let (mut c_read, mut c_write) = client_stream.into_split();
+      let (mut u_read, mut u_write) = upstream_stream.into_split();
+      let _ = tokio::try_join!(
+        tokio::io::copy(&mut c_read, &mut u_write),
+        tokio::io::copy(&mut u_read, &mut c_write)
+      );
+      return;
+    }
+  }
+
+  // Fallback / Standard HTTP Upstream Proxy Handling
   let mut auth_header = String::new();
   if let (Some(u), Some(p)) = (&config.username, &config.password) {
     if !u.is_empty() {
@@ -361,57 +530,29 @@ async fn handle_bridge_connection(
     }
   }
 
-  if is_connect {
-    // For HTTPS CONNECT: inject Proxy-Authorization if present
-    let modified_connect = if !auth_header.is_empty() && !raw_header.contains("Proxy-Authorization:") {
-      if let Some(pos) = raw_header.find("\r\n") {
-        let (first_line, rest) = raw_header.split_at(pos + 2);
-        format!("{}{}{}", first_line, auth_header, rest)
-      } else {
-        raw_header.to_string()
-      }
+  let modified_req = if !auth_header.is_empty() && !raw_header.contains("Proxy-Authorization:") {
+    if let Some(pos) = raw_header.find("\r\n") {
+      let (first_line, rest) = raw_header.split_at(pos + 2);
+      format!("{}{}{}", first_line, auth_header, rest)
     } else {
       raw_header.to_string()
-    };
-
-    if let Err(e) = upstream_stream.write_all(modified_connect.as_bytes()).await {
-      emit_log(app_handle.as_ref(), "ERROR", &format!("Upstream write error: {}", e));
-      return;
     }
-
-    // Tunnel bi-directionally
-    let (mut client_read, mut client_write) = client_stream.into_split();
-    let (mut upstream_read, mut upstream_write) = upstream_stream.into_split();
-
-    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-    let _ = tokio::try_join!(client_to_upstream, upstream_to_client);
   } else {
-    // For plain HTTP proxy request: inject Proxy-Authorization
-    let modified_req = if !auth_header.is_empty() && !raw_header.contains("Proxy-Authorization:") {
-      if let Some(pos) = raw_header.find("\r\n") {
-        let (first_line, rest) = raw_header.split_at(pos + 2);
-        format!("{}{}{}", first_line, auth_header, rest)
-      } else {
-        raw_header.to_string()
-      }
-    } else {
-      raw_header.to_string()
-    };
+    raw_header.to_string()
+  };
 
-    if let Err(_e) = upstream_stream.write_all(modified_req.as_bytes()).await {
-      return;
-    }
-
-    let (mut client_read, mut client_write) = client_stream.into_split();
-    let (mut upstream_read, mut upstream_write) = upstream_stream.into_split();
-
-    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-    let _ = tokio::try_join!(client_to_upstream, upstream_to_client);
+  if let Err(e) = upstream_stream.write_all(modified_req.as_bytes()).await {
+    emit_log(app_handle.as_ref(), "ERROR", &format!("Upstream write error: {}", e));
+    return;
   }
+
+  let (mut client_read, mut client_write) = client_stream.into_split();
+  let (mut upstream_read, mut upstream_write) = upstream_stream.into_split();
+
+  let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+  let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+
+  let _ = tokio::try_join!(client_to_upstream, upstream_to_client);
 }
 
 #[tauri::command]
@@ -692,7 +833,7 @@ fn close_window(window: Window, minimize_to_tray: Option<bool>) -> Result<(), St
 // GitHub Auto-Updater Commands
 #[tauri::command]
 async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, String> {
-  let current_version = "1.3.0".to_string();
+  let current_version = env!("CARGO_PKG_VERSION").to_string();
   let repo = repo_name.unwrap_or_else(|| "sibasyanya/ProxyTunnel-VPN-Client".into());
   let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
