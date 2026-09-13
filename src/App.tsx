@@ -172,16 +172,7 @@ export default function App() {
   // Real Live External IP Fetcher
   const refreshPublicIp = async () => {
     try {
-      // First try Tauri native command
-      const res = await tauriInvoke<{ ip: string }>('get_real_public_ip');
-      if (res && res.ip && res.ip !== 'Direct IP' && res.ip !== '') {
-        setNetworkStats((prev) => ({
-          ...prev,
-          activeIp: res.ip,
-        }));
-        return;
-      }
-      // Fallback: standard fetch
+      // Direct HTTP fetch (will automatically pass through Windows active proxy if connected)
       const resp = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
       const data = await resp.json();
       if (data.ip) {
@@ -189,9 +180,22 @@ export default function App() {
           ...prev,
           activeIp: data.ip,
         }));
+        return;
       }
     } catch (e) {
-      console.log('IP check fallback:', e);
+      console.log('Primary IP fetch error, checking fallback:', e);
+      try {
+        const resp2 = await fetch('https://ifconfig.me/ip', { cache: 'no-store' });
+        const ip = (await resp2.text()).trim();
+        if (ip && !ip.includes('<')) {
+          setNetworkStats((prev) => ({
+            ...prev,
+            activeIp: ip,
+          }));
+        }
+      } catch (err2) {
+        console.log('IP check fallback failed:', err2);
+      }
     }
   };
 

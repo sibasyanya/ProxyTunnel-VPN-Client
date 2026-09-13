@@ -52,8 +52,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     isChecking: false,
     hasChecked: false,
     hasUpdate: false,
-    currentVersion: 'v1.3.0',
-    latestVersion: 'v1.3.0',
+    currentVersion: 'v1.3.4',
+    latestVersion: 'v1.3.4',
     releaseNotes: '',
     downloadUrl: null,
     isDownloading: false,
@@ -101,8 +101,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         const response = await fetch(`https://api.github.com/repos/${githubRepo}/releases/latest`);
         if (response.ok) {
           const data = await response.json();
-          const tag = (data.tag_name || 'v1.3.0').trim();
-          const hasUp = tag !== 'v1.3.0' && tag !== '1.3.0';
+          const tag = (data.tag_name || 'v1.3.4').trim();
+          const hasUp = tag !== 'v1.3.4' && tag !== '1.3.4';
           let downloadUrl: string | null = null;
           if (data.assets && Array.isArray(data.assets)) {
             const exeAsset = data.assets.find((a: any) => a.name.endsWith('.exe') || a.name.endsWith('.msi'));
@@ -113,7 +113,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             isChecking: false,
             hasChecked: true,
             hasUpdate: hasUp,
-            currentVersion: 'v1.3.0',
+            currentVersion: 'v1.3.4',
             latestVersion: tag.startsWith('v') ? tag : `v${tag}`,
             releaseNotes: data.body || '',
             downloadUrl,

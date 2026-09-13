@@ -73,7 +73,7 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
     if enabled {
       let proxy_server = format!("http=127.0.0.1:{0};https=127.0.0.1:{0}", local_port);
 
-      // 1. Direct registry updates via reg.exe
+      // 1. Direct registry updates via reg.exe (standard internet settings)
       let _ = Command::new("reg")
         .args(&[
           "add",
@@ -134,62 +134,67 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
-      // 2. WinHTTP system proxy
+      // 2. WinHTTP system proxy (netsh runs completely silent with CREATE_NO_WINDOW)
       let _ = Command::new("netsh")
         .args(&["winhttp", "set", "proxy", &proxy_server, "<local>;localhost;127.0.0.1"])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
-      // 3. Update DefaultConnectionSettings binary blob for Edge/Chrome/Brave + Notify WinINet
-      let ps_script = format!(
-        r#"
-        $proxy = "{}"
-        $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
-        if (Test-Path $connKey) {{
-            # Construct standard WinINet connection settings binary blob
-            $proxyBytes = [System.Text.Encoding]::ASCII.GetBytes($proxy)
-            $pLen = [byte]$proxyBytes.Length
-            # 70-byte baseline header with flags: 0x03 (Proxy enabled, manual)
-            $blob = [byte[]]@(
-                0x46, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x03, 0x00, 0x00, 0x00,
-                $pLen, 0x00, 0x00, 0x00
-            ) + $proxyBytes + @(
-                0x07, 0x00, 0x00, 0x00
-            ) + [System.Text.Encoding]::ASCII.GetBytes("<local>") + @(
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-            )
-            Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $blob -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path $connKey -Name SavedConnectionSettings -Value $blob -ErrorAction SilentlyContinue
-        }}
+      // 3. Update DefaultConnectionSettings and SavedConnectionSettings directly via reg.exe with REG_BINARY
+      // Format of WinINet connection settings binary blob:
+      // Header: 46 00 00 00 (46h = 70 length) + Counter (00 00 00 00) + Flags (03 00 00 00 = Manual Proxy On) + Proxy length (4 bytes)
+      let proxy_bytes = proxy_server.as_bytes();
+      let proxy_len = proxy_bytes.len() as u32;
+      let override_str = "<local>";
+      let override_bytes = override_str.as_bytes();
+      let override_len = override_bytes.len() as u32;
 
-        $sig = @'
-        [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
-        public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
-'@
-        $w = Add-Type -MemberDefinition $sig -Name WinINetNotify -Namespace Win32 -PassThru -ErrorAction SilentlyContinue
-        if ($w) {{
-            [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
-            [Win32.WinINetNotify]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
-        }}
-        "#,
-        proxy_server
-      );
+      let mut blob: Vec<u8> = Vec::with_capacity(128);
+      // Header
+      blob.extend_from_slice(&[0x46, 0x00, 0x00, 0x00]);
+      blob.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+      blob.extend_from_slice(&[0x03, 0x00, 0x00, 0x00]); // 0x03: PROXY_TYPE_PROXY
+      blob.extend_from_slice(&proxy_len.to_le_bytes());
+      blob.extend_from_slice(proxy_bytes);
+      blob.extend_from_slice(&override_len.to_le_bytes());
+      blob.extend_from_slice(override_bytes);
+      // Trailing padding to ensure WinINet compatibility
+      blob.extend_from_slice(&[0x00; 32]);
 
-      let _ = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+      // Convert binary bytes to hex string for reg.exe (e.g. 460000000000000003...)
+      let hex_blob: String = blob.iter().map(|b| format!("{:02x}", b)).collect();
+
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections",
+          "/v",
+          "DefaultConnectionSettings",
+          "/t",
+          "REG_BINARY",
+          "/d",
+          &hex_blob,
+          "/f",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
-      // 4. Flush DNS
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections",
+          "/v",
+          "SavedConnectionSettings",
+          "/t",
+          "REG_BINARY",
+          "/d",
+          &hex_blob,
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      // 4. Flush DNS without opening console window
       let _ = Command::new("ipconfig")
         .args(&["/flushdns"])
         .creation_flags(CREATE_NO_WINDOW)
@@ -217,34 +222,44 @@ fn apply_windows_proxy(enabled: bool, local_port: u16) -> Result<(), String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
-      let ps_disable = r#"
-        $connKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
-        if (Test-Path $connKey) {
-            $defaultConn = (Get-ItemProperty -Path $connKey -Name DefaultConnectionSettings -ErrorAction SilentlyContinue).DefaultConnectionSettings
-            if ($defaultConn) {
-                $defaultConn[8] = 1
-                Set-ItemProperty -Path $connKey -Name DefaultConnectionSettings -Value $defaultConn
-            }
-            $savedConn = (Get-ItemProperty -Path $connKey -Name SavedConnectionSettings -ErrorAction SilentlyContinue).SavedConnectionSettings
-            if ($savedConn) {
-                $savedConn[8] = 1
-                Set-ItemProperty -Path $connKey -Name SavedConnectionSettings -Value $savedConn
-            }
-        }
+      // Reset DefaultConnectionSettings and SavedConnectionSettings to direct (Flag = 0x01: PROXY_TYPE_DIRECT)
+      let mut direct_blob: Vec<u8> = Vec::with_capacity(64);
+      direct_blob.extend_from_slice(&[0x46, 0x00, 0x00, 0x00]);
+      direct_blob.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+      direct_blob.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // 0x01: direct / no proxy
+      direct_blob.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // length 0
+      direct_blob.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // length 0
+      direct_blob.extend_from_slice(&[0x00; 32]);
 
-        $sig = @'
-        [DllImport("wininet.dll", SetLastError = true, CharSet=CharSet.Auto)]
-        public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
-'@
-        $w = Add-Type -MemberDefinition $sig -Name WinINetNotifyOff -Namespace Win32 -PassThru -ErrorAction SilentlyContinue
-        if ($w) {
-            [Win32.WinINetNotifyOff]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
-            [Win32.WinINetNotifyOff]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
-        }
-      "#;
+      let hex_direct: String = direct_blob.iter().map(|b| format!("{:02x}", b)).collect();
 
-      let _ = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_disable])
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections",
+          "/v",
+          "DefaultConnectionSettings",
+          "/t",
+          "REG_BINARY",
+          "/d",
+          &hex_direct,
+          "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+      let _ = Command::new("reg")
+        .args(&[
+          "add",
+          r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections",
+          "/v",
+          "SavedConnectionSettings",
+          "/t",
+          "REG_BINARY",
+          "/d",
+          &hex_direct,
+          "/f",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
@@ -275,16 +290,14 @@ fn emit_log<R: tauri::Runtime>(app_handle: Option<&tauri::AppHandle<R>>, level: 
 }
 
 fn chrono_or_fallback_time() -> String {
-  let output = Command::new("powershell")
-    .args(&["-NoProfile", "-Command", "Get-Date -Format 'HH:mm:ss'"])
-    .output();
-  if let Ok(out) = output {
-    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !t.is_empty() {
-      return t;
-    }
-  }
-  "NOW".to_string()
+  let dur = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap_or_default();
+  let secs = dur.as_secs();
+  let hours = (secs / 3600) % 24;
+  let mins = (secs / 60) % 60;
+  let s = secs % 60;
+  format!("{:02}:{:02}:{:02}", hours, mins, s)
 }
 
 // Local bridge worker: listens on 127.0.0.1:LOCAL_BRIDGE_PORT and proxies with upstream authentication
@@ -621,49 +634,8 @@ fn check_wintun_driver() -> bool {
 
 #[tauri::command]
 async fn get_real_public_ip() -> Result<RealIpInfo, String> {
-  #[cfg(target_os = "windows")]
-  {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let ps_cmd = r#"
-      try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $req = [System.Net.WebRequest]::Create('https://api.ipify.org?format=json')
-        $req.Timeout = 6000
-        $res = $req.GetResponse()
-        $reader = New-Object System.IO.StreamReader($res.GetResponseStream())
-        $json = $reader.ReadToEnd()
-        $reader.Close()
-        $res.Close()
-        $json
-      } catch {
-        Write-Output "ERROR: $($_.Exception.Message)"
-      }
-    "#;
-
-    if let Ok(output) = Command::new("powershell")
-      .args(&["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
-      .creation_flags(CREATE_NO_WINDOW)
-      .output()
-    {
-      let stdout = String::from_utf8_lossy(&output.stdout);
-      if !stdout.starts_with("ERROR") && !stdout.trim().is_empty() {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
-          if let Some(ip) = val["ip"].as_str() {
-            return Ok(RealIpInfo {
-              ip: ip.to_string(),
-              country: None,
-              country_code: None,
-              city: None,
-              isp: None,
-            });
-          }
-        }
-      }
-    }
-  }
-
+  // Let frontend query HTTPS directly through the active local proxy bridge
+  // This prevents spawning external PowerShell sub-processes that cause window flicker
   Ok(RealIpInfo {
     ip: "Direct IP".into(),
     country: None,
@@ -913,7 +885,7 @@ async fn check_github_update(repo_name: Option<String>) -> Result<UpdateInfo, St
     has_update: false,
     download_url: None,
     release_notes: Some("You have the latest version installed.".into()),
-    release_name: Some("ProxyTunnel v1.3.0 Stable".into()),
+    release_name: Some("ProxyTunnel v1.3.4 Stable".into()),
   })
 }
 
